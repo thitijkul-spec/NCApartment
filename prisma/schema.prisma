@@ -1,0 +1,252 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Branch {
+  id                 Int                    @id @default(autoincrement())
+  name               String
+  address            String?
+  phone              String?
+  active             Boolean                @default(true)
+  defaultWaterRate   Float?
+  defaultElectricRate Float?
+  roomTypes          RoomType[]
+  rooms              Room[]
+  maintenanceRequests MaintenanceRequest[]
+  expenses           Expense[]
+  createdAt          DateTime               @default(now())
+}
+
+model RoomType {
+  id            Int      @id @default(autoincrement())
+  branchId      Int
+  branch        Branch   @relation(fields: [branchId], references: [id])
+  name          String
+  priceDaily    Float?
+  priceMonthly  Float?
+  priceDeposit  Float?
+  maxOccupancy  Int?
+  active        Boolean  @default(true)
+  rooms         Room[]
+  createdAt     DateTime @default(now())
+}
+
+// status: available | unavailable | blocked
+// currentMode: daily | monthly
+// waterElectricMode: metered | flat_rate
+model Room {
+  id                Int      @id @default(autoincrement())
+  branchId          Int
+  branch            Branch   @relation(fields: [branchId], references: [id])
+  roomTypeId        Int
+  roomType          RoomType @relation(fields: [roomTypeId], references: [id])
+  roomNumber        String
+  floor             String?
+  currentMode       String   @default("monthly")
+  status            String   @default("available")
+  waterElectricMode String   @default("metered")
+  flatWaterRate     Float?
+  flatElectricRate  Float?
+  priceMonthly      Float?
+  priceDaily        Float?
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now())
+
+  bookings  Booking[]
+  contracts Contract[]
+  bills     Bill[]
+  meterReadings       MeterReading[]
+  maintenanceRequests MaintenanceRequest[]
+
+  @@unique([branchId, roomNumber])
+}
+
+model Customer {
+  id                     Int      @id @default(autoincrement())
+  name                   String
+  phone                  String
+  idCardNo               String?
+  address                String?
+  emergencyContactName   String?
+  emergencyContactPhone  String?
+  createdAt              DateTime @default(now())
+
+  bookings  Booking[]
+  contracts Contract[]
+  bills     Bill[]
+  notes               CustomerNote[]
+  maintenanceRequests MaintenanceRequest[]
+}
+
+// bookingType: walkin | advance
+// paymentTiming: prepaid_full | pay_before_checkin | pay_after_checkout
+// status: booked | checked_in | checked_out | cancelled | no_show
+model Booking {
+  id               Int      @id @default(autoincrement())
+  roomId           Int
+  room             Room     @relation(fields: [roomId], references: [id])
+  customerId       Int
+  customer         Customer @relation(fields: [customerId], references: [id])
+  checkinDate      DateTime
+  checkoutDate     DateTime
+  nights           Int
+  bookingType      String   @default("walkin")
+  paymentTiming    String   @default("pay_before_checkin")
+  baseAmount       Float
+  discountAmount   Float    @default(0)
+  discountReason   String?
+  lateCheckoutFee  Float    @default(0)
+  earlyCheckoutFee Float    @default(0)
+  totalAmount      Float
+  depositPaid      Float    @default(0)
+  status           String   @default("booked")
+  createdAt        DateTime @default(now())
+
+  bills Bill[]
+}
+
+// status: draft | active | ended | terminated
+// (เวอร์ชัน prototype นี้ยังไม่มี e-signature/PDF — ใส่ทีหลังเมื่อเชื่อม LINE)
+model Contract {
+  id             Int      @id @default(autoincrement())
+  roomId         Int
+  room           Room     @relation(fields: [roomId], references: [id])
+  customerId     Int
+  customer       Customer @relation(fields: [customerId], references: [id])
+  startDate      DateTime
+  endDate        DateTime
+  monthlyRate    Float
+  depositAmount  Float    @default(0)
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+
+  bills Bill[]
+}
+
+// billType: monthly | daily
+// status: issued | partial | paid | cancelled
+model Bill {
+  id                  Int       @id @default(autoincrement())
+  branchId            Int
+  billType            String
+  contractId          Int?
+  contract            Contract? @relation(fields: [contractId], references: [id])
+  bookingId           Int?
+  booking             Booking?  @relation(fields: [bookingId], references: [id])
+  customerId          Int
+  customer            Customer  @relation(fields: [customerId], references: [id])
+  roomId              Int
+  room                Room      @relation(fields: [roomId], references: [id])
+  billingPeriodStart  DateTime
+  billingPeriodEnd    DateTime
+  roomCharge          Float     @default(0)
+  waterCharge         Float     @default(0)
+  electricCharge      Float     @default(0)
+  otherCharges        Float     @default(0)
+  otherChargesNote    String?
+  discountAmount      Float     @default(0)
+  totalAmount         Float
+  dueDate             DateTime
+  status              String    @default("issued")
+  createdAt           DateTime  @default(now())
+
+  payments Payment[]
+}
+
+// paymentMethod: cash | transfer | promptpay | other
+model Payment {
+  id            Int      @id @default(autoincrement())
+  billId        Int
+  bill          Bill     @relation(fields: [billId], references: [id])
+  amount        Float
+  paymentDate   DateTime
+  paymentMethod String   @default("cash")
+  note          String?
+  createdAt     DateTime @default(now())
+}
+
+// meterType: water | electric
+// status: draft | confirmed | editable
+model MeterReading {
+  id              Int      @id @default(autoincrement())
+  roomId          Int
+  room            Room     @relation(fields: [roomId], references: [id])
+  meterType       String
+  billingMonth    String
+  previousReading Float    @default(0)
+  currentReading  Float
+  unitUsed        Float
+  ratePerUnit     Float
+  amount          Float
+  status          String   @default("draft")
+  flaggedAbnormal Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  @@unique([roomId, meterType, billingMonth])
+}
+
+model CustomerNote {
+  id         Int      @id @default(autoincrement())
+  customerId Int
+  customer   Customer @relation(fields: [customerId], references: [id])
+  note       String
+  createdAt  DateTime @default(now())
+}
+
+model Blacklist {
+  id        Int      @id @default(autoincrement())
+  phone     String
+  reason    String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+// priority: 1 (สูงสุด) - 5 (ต่ำสุด)
+// status: new | assigned | in_progress | done | cancelled
+model MaintenanceRequest {
+  id            Int       @id @default(autoincrement())
+  branchId      Int
+  branch        Branch    @relation(fields: [branchId], references: [id])
+  roomId        Int
+  room          Room      @relation(fields: [roomId], references: [id])
+  customerId    Int?
+  customer      Customer? @relation(fields: [customerId], references: [id])
+  description   String
+  category      String?
+  priority      Int       @default(3)
+  status        String    @default("new")
+  assignedTo    String?
+  cost          Float?
+  completedDate DateTime?
+  createdAt     DateTime  @default(now())
+}
+
+// role: owner | staff
+// permissions: comma-separated module codes staff can access, e.g. "A,B,C,D,F,G,H,M,L"
+model User {
+  id              Int      @id @default(autoincrement())
+  name            String
+  username        String   @unique
+  passwordHash    String
+  role            String   @default("staff")
+  canManageUsers  Boolean  @default(false)
+  permissions     String   @default("A,B,C,D,F,G,H,M,L")
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+}
+
+model Expense {
+  id          Int      @id @default(autoincrement())
+  branchId    Int
+  branch      Branch   @relation(fields: [branchId], references: [id])
+  category    String
+  description String?
+  amount      Float
+  expenseDate DateTime
+  createdAt   DateTime @default(now())
+}
