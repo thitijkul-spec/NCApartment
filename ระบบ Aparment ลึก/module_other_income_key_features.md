@@ -7,7 +7,7 @@
 
 ## ความสัมพันธ์กับระบบ multi-building
 - OtherIncome ผูกกับ `building_id`
-- ใช้ **Contact (ผู้ซื้อและผู้ขาย)** และ **BankAccount** master data ชุดเดียวกับ `module_expense` (Contact ใช้ร่วมทุกอาคาร, BankAccount แยกตามอาคาร)
+- ใช้ **Contact (ผู้ซื้อและผู้ขาย)** และ **Account** (เดิมชื่อ `BankAccount`, generalize แล้วตาม `module_accounting_key_features.md`) master data ชุดเดียวกับ `module_expense` (Contact ใช้ร่วมทุกอาคาร, Account แยกตามอาคาร)
 
 ## Data Model
 
@@ -60,7 +60,7 @@
 - `other_income_id` — FK → OtherIncome
 - `amount`
 - `method` — enum: `cash` / `transfer` / `check` / `credit_card`
-- `bank_account_id` — FK → BankAccount (บังคับถ้า `method = transfer`)
+- `account_id` — FK → Account (เดิมชื่อ `bank_account_id`; บังคับกรอกเสมอตอนนี้ เพราะทุกธุรกรรมต้องเลือกบัญชี รวมถึงเงินสด)
 - `date`
 - `slip_image_urls` — สลิปโอน/หลักฐานการรับเงิน **แนบต่อรายการรับนี้โดยเฉพาะ** (แยกจาก `attachment_urls` ที่หัวบิล)
 - `notes`
@@ -75,8 +75,8 @@
 1. **List/Dashboard**: filter tab เปลี่ยนเป็น 10 หมวดของรายได้อื่นๆ, สถิติ/กราฟรูปแบบเดียวกัน (รวมเดือนนี้/รวมทั้งปี/เฉลี่ยต่อเดือน + กราฟสัดส่วน + กราฟรายเดือน) + filter เพิ่มเติม: สถานะรับ (unpaid/partial/paid), ผู้ซื้อ, ช่วงวันที่, ค้นหาด้วยเลขที่เอกสาร
 2. **Modal บันทึก/แก้ไข (multi-line)**: เลือกผู้ซื้อ (ผู้เช่า/ลูกค้าทั่วไป) แทนผู้ขาย, ฟิลด์อื่นเหมือนกัน (ประเภทรับเงิน สด/เชื่อ, เลขใบกำกับภาษีขาย, หัก ณ ที่จ่าย, รายการย่อยหลายบรรทัด, VAT ต่อรายการ)
 3. **Modal จัดการการรับเงิน**: เหมือน ExpensePayment แต่เป็นฝั่งรับเงิน
-4. ใช้หน้าจัดการ Contact และ BankAccount ร่วมกับ `module_expense` (ไม่ต้องสร้างหน้าซ้ำ) — รวมถึงกติกาลบ Contact ได้อิสระ, ไม่มี archive, ไม่มีเตือนรายการซ้ำ (ดูรายละเอียดใน `module_expense_key_features.md`)
-5. **ไม่มีปุ่มดู/พิมพ์ PDF ในหน้านี้** — ย้ายไปที่ module "รายงาน" เหมือนกัน
+4. ใช้หน้าจัดการ Contact และ Account ร่วมกับ `module_expense` (ไม่ต้องสร้างหน้าซ้ำ) — รวมถึงกติกาลบ Contact ได้อิสระ, ไม่มี archive, ไม่มีเตือนรายการซ้ำ (ดูรายละเอียดใน `module_expense_key_features.md`)
+5. **ไม่มีปุ่มดู/พิมพ์ PDF ในหน้านี้** — ดู/พิมพ์เอกสารรายตัวอยู่ที่ sub-tab "บิลกำหนดเอง" ใน module "ฐานข้อมูลบัญชี", ส่วนรายงานสรุป/วิเคราะห์/export อยู่ที่ module "รายงาน"
 
 ## Action/ฟังก์ชัน
 - เพิ่ม/แก้ไข/ลบ OtherIncome (hard delete)
@@ -90,15 +90,14 @@
 เหมือนกับ `module_expense` ทุกประการ — ผูกกับ permission flag ระดับ module ของหมวด "การเงิน" (Owner เห็นหมด, Staff ที่ไม่มีสิทธิ์จะมองไม่เห็นเมนูนี้เลย) หน้าจัดการ user/role อยู่นอกสโคป รอ module "ตั้งค่า" — ดูรายละเอียดเพิ่มใน `module_expense_key_features.md`
 
 ## ความสัมพันธ์กับ module อื่น
-- **module_expense**: ใช้ Contact, BankAccount, LedgerEntry model ชุดเดียวกัน — โครงสร้างหน้าจอ/logic เหมือนกันเกือบทั้งหมด
+- **module_expense**: ใช้ Contact, Account, LedgerEntry model ชุดเดียวกัน — โครงสร้างหน้าจอ/logic เหมือนกันเกือบทั้งหมด
 - **module_tenant**: ผูก `buyer_tenant_id` เมื่อผู้ซื้อเป็นผู้เช่าในระบบ
 - **module_room**: ผูก `room_id` แบบ optional
-- **module ตั้งค่า**: BankAccount จัดการที่นี่
-- **module รายงาน**: ฟีเจอร์ดู/พิมพ์/export ใบเสร็จ/ใบกำกับภาษีขายอยู่ที่นี่
-- **module ฐานข้อมูลบัญชี (ยังไม่ทำ)**: ดึง LedgerEntry ไปทำกระทบยอดต่อในอนาคต
+- **module ฐานข้อมูลบัญชี**: จัดการ Account ที่นี่ (ย้ายจากตั้งค่าเดิม) + ดึง LedgerEntry ไปแสดงในทะเบียนเอกสาร/บัญชีแยกประเภท + หน้าสรุปยอดค้างรับ (ดูด้านล่าง) + ดู/พิมพ์เอกสารรายตัว (sub-tab "บิลกำหนดเอง")
+- **module รายงาน**: รายงานสรุป/วิเคราะห์/export Excel-CSV ของรายได้อื่นๆ (ไม่ใช่ดูเอกสารรายตัว — ย้ายไปฐานข้อมูลบัญชีแล้ว)
 
 ## นอกสโคปรอบนี้ (ตัดออกโดยเจตนา)
-- หน้าสรุป "ยอดค้างรับทั้งหมด" ต่อผู้ซื้อ 1 คน — ไม่ทำในรอบนี้ อาจไปอยู่ใน module ฐานข้อมูลบัญชี ทีหลัง
+- หน้าสรุป "ยอดค้างรับทั้งหมด" ต่อผู้ซื้อ 1 คน — ไม่ทำในรอบนี้ **ย้ายไปอยู่ใน module ฐานข้อมูลบัญชี (แท็บ "ยอดค้างชำระ/ค้างรับ") แล้ว** ดู `module_accounting_key_features.md`
 - ระบบแจ้งเตือนอัตโนมัติในภาพรวมสำหรับรายการค้างรับเกินกำหนด
 
 ## Assumption ที่ยังไม่ได้ยืนยัน (ควรถามผู้ใช้ตอนเริ่ม implement)

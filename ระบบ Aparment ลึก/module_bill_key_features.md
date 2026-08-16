@@ -55,7 +55,7 @@ Payment
 - bill_id                → FK Bill
 - amount                  → decimal
 - method                  → enum: cash | transfer
-- bank_account_id         → FK BankAccount, nullable
+- account_id              → FK Account, nullable (เดิมชื่อ `bank_account_id`/`BankAccount` — generalize เป็น `Account` ตาม module_accounting_key_features.md ผู้ใช้เพิ่มบัญชีเองได้ไม่จำกัด ไม่ใช่แค่บัญชีธนาคารจริง)
 - source                  → enum: admin_manual | line_upload
 - slip_image              → string url, nullable (ไม่บังคับทั้งสอง source)
 - verified                → boolean, default true ถ้า admin_manual, default false ถ้า line_upload
@@ -86,7 +86,7 @@ Payment
 | สถานะห้อง (บริบทบิล) | เงื่อนไข | สี |
 |---|---|---|
 | ยังไม่มีบิล | ห้องว่าง ไม่มีผู้เช่า | เทา |
-| รายวัน | โหมดปัจจุบันของห้อง = รายวัน (ข้อความ "บิลรายวันอยู่ที่หน้าบัญชี" ไม่มี action ออกบิล) | ฟ้า |
+| รายวัน | ห้องมีผู้เช่าที่ประเภทการเช่า derive จาก Booking active = รายวัน (ตาม `module_room_key_features.md` — ไม่มี `current_mode` field แยกแล้ว) (ข้อความ "บิลรายวันอยู่ที่หน้าบัญชี" ไม่มี action ออกบิล) | ฟ้า |
 | รอออกบิล | มีผู้เช่ารายเดือน แต่ยังไม่มี Bill record ของ `billing_month` ที่กำลังดู | เทาอ่อน/ป้ายใหม่ |
 | รอชำระ / ชำระบางส่วน / รอตรวจสอบ / ชำระแล้ว / เกินกำหนด | มี Bill record แล้ว — ตรงตาม `Bill.status` (เกินกำหนด = computed) | ตามสี status |
 

@@ -16,6 +16,7 @@
 - **ผู้เช่า (required):** เลือกจากผู้เช่าที่มีอยู่ หรือสร้างผู้เช่าใหม่จากหน้านี้ได้เลย — ปุ่ม "สร้างผู้เช่าใหม่" เปิดฟอร์มเต็มรูปแบบเดียวกับหน้า module "ผู้เช่า" ทุก field (ใช้ component/ฟอร์มเดียวกัน ไม่ทำฟอร์มย่อแยกต่างหาก) กรอกเสร็จแล้วบันทึกลงตาราง `tenants` กลางโดยตรง (ไม่ใช่ shadow/duplicate record) จึงไปโผล่ในหน้า module "ผู้เช่า" ทันที — `tenant_type` ถูกตั้งเป็น `'monthly'` เสมอ (เพราะมีแค่ผู้เช่ารายเดือนเท่านั้นที่มีสัญญา ดู `module_tenant_key_features.md`)
 - **ห้องพัก (required):** ต้องเลือก 1 ห้องเสมอต่อสัญญา (ใช้ดึงราคา/ข้อมูลห้องมาพิมพ์ในเอกสาร)
 - **occupancy_id (optional):** สัญญา**ไม่บังคับ**ผูกกับ `room_occupancy` ตอนสร้าง — สร้างสัญญาได้อิสระก่อน แล้วค่อยผูก occupancy ทีหลังได้ (เช่น ตอน check-in จริง) ระบบเพียงแนะนำ flow ให้สร้างผู้เช่าก่อนสร้างสัญญา แต่ไม่บังคับ
+- **module ฐานข้อมูลบัญชี:** เงินมัดจำ (`deposit_amount` ในสัญญานี้) มี entity `Deposit` แยกในโมดูลนั้นไว้ติดตามสถานะคืน/ริบ — ดู `module_accounting_key_features.md`
 
 ## Data Model
 
@@ -57,7 +58,7 @@ contracts (
   is_bilingual BOOLEAN,             -- true = พิมพ์เอกสารแบบไทย+อังกฤษ (ทีละข้อ) พร้อมข้อ 13 คงที่ (governing language) ต่อท้ายเสมอ
 
   -- รายละเอียดทางการเงิน — ดึงค่าเริ่มต้นจากราคาห้องที่เลือก แก้ไขอิสระได้ต่อสัญญา (ไม่กระทบราคาห้องตั้งต้น)
-  rent_amount, deposit_amount, payment_due_day,
+  rent_amount, deposit_amount, payment_due_day,  -- deposit_amount: การคืน/ริบเงินมัดจำตามสถานะ (ถืออยู่/คืนแล้ว/ริบทั้งหมด) ติดตามที่ entity `Deposit` ใหม่ใน module_accounting_key_features.md ผูกกับ contract_id นี้
   late_fee_per_day, advance_rent_amount,
   electrical_equipment_fee, furniture_equipment_fee,
 
