@@ -720,6 +720,16 @@ th {
   max-width: 980px;
 }
 
+/* ฟอร์มที่ครอบ modal-body + modal-footer ไว้ด้วยกัน ต้องส่งต่อ flex context ให้ลูกด้านในด้วย
+   ไม่งั้น modal-body จะไม่รู้ว่าต้อง scroll แทนที่จะดันเนื้อหาล้นออกไปนอกจอ */
+.modal > form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;
@@ -755,6 +765,7 @@ th {
   padding: 20px 24px;
   overflow-y: auto;
   flex: 1;
+  min-height: 0;
 }
 
 .modal-footer {
