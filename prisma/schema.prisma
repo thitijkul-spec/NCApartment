@@ -7,246 +7,788 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Branch {
-  id                 Int                    @id @default(autoincrement())
-  name               String
-  address            String?
-  phone              String?
-  active             Boolean                @default(true)
-  defaultWaterRate   Float?
-  defaultElectricRate Float?
-  roomTypes          RoomType[]
-  rooms              Room[]
-  maintenanceRequests MaintenanceRequest[]
-  expenses           Expense[]
-  createdAt          DateTime               @default(now())
+// ต้นทางสเปคทั้งหมด: `ระบบ Aparment ลึก/module_*.md` (ไม่ใช่ docs/SPEC.md หรือ docs/SRS.md ซึ่งล้าสมัยแล้ว)
+// สถาปัตยกรรม multi-building: ทุก entity ที่เกี่ยวกับข้อมูลห้อง/ผู้เช่า/การเงิน ผูกกับ buildingId เสมอ
+// การตัดสินใจแก้ conflict ระหว่างสเปค (ยืนยันกับผู้ใช้แล้ว):
+//   1) ไม่มีระบบ Blacklist แยก — ใช้ Tenant.note แทน (module_tenant ชนะ module_booking)
+//   2) ไม่เก็บ "ผู้เช่าปัจจุบันของห้อง" ซ้ำบน Room — derive จาก RoomOccupancy เสมอ
+//   3) Deposit มีแค่ 2 ทาง: คืนเต็มจำนวน (returned) หรือริบทั้งหมด (forfeited) ไม่มีหักบางส่วน
+//      ค่าเสียหาย/ทำความสะอาดตอนย้ายออก ให้ออกเป็นบิล/รายการแยกต่างหาก ไม่ผูกกับ Deposit
+//   4) Deposit.contractId เป็น optional — เก็บมัดจำก่อนสัญญาเสร็จได้ ผูกสัญญาทีหลังได้
+//   5) เงินมัดจำจอง (BookingPayment) ไม่ผูกอัตโนมัติกับ Deposit — เป็นยอดเครดิตที่พนักงานเลือกเองตอนออกบิลแรกเข้า
+//      ว่าจะหักเข้าค่าเช่าหรือเข้ามัดจำ (ผ่านการปรับ BillLineItem ตรงๆ ไม่ต้องมี field พิเศษ)
+
+// ===================== ตั้งค่า/โครงสร้างระบบ (module_setting) =====================
+
+model Building {
+  id        Int      @id @default(autoincrement())
+  name      String
+  address   String?
+  floors    Int?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userAccess              UserBuildingAccess[]
+  payeeSettings           BuildingPayeeSettings?
+  settings                BuildingSettings?
+  rooms                   Room[]
+  roomImages              RoomImage[]
+  bookings                Booking[]
+  tenants                 Tenant[]
+  contractClauseTemplates ContractClauseTemplate[]
+  contracts               Contract[]
+  meterReadings           MeterReading[]
+  bills                   Bill[]
+  repairCategories        RepairCategory[]
+  technicians             Technician[]
+  repairRequests          RepairRequest[]
+  sharedEquipments        SharedEquipment[]
+  maintenanceLogs         MaintenanceLog[]
+  parcels                 Parcel[]
+  accounts                Account[]
+  expenses                Expense[]
+  otherIncomes            OtherIncome[]
+  ledgerEntries           LedgerEntry[]
+  dailyBills              DailyBill[]
+  auditLogs               AuditLog[]
 }
 
-model RoomType {
-  id            Int      @id @default(autoincrement())
-  branchId      Int
-  branch        Branch   @relation(fields: [branchId], references: [id])
-  name          String
-  priceDaily    Float?
-  priceMonthly  Float?
-  priceDeposit  Float?
-  maxOccupancy  Int?
-  active        Boolean  @default(true)
-  rooms         Room[]
-  createdAt     DateTime @default(now())
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  username     String   @unique
+  passwordHash String
+  role         String   @default("staff") // owner | staff — มี owner ได้แค่ 1 คนต่อระบบ
+  permissions  String   @default("") // comma-separated module codes (เฉพาะ staff)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  buildingAccess UserBuildingAccess[] // owner ไม่ต้องมี record ก็เข้าได้ทุกอาคาร
+  auditLogs      AuditLog[]
 }
 
-// status: available | unavailable | blocked
-// currentMode: daily | monthly
-// waterElectricMode: metered | flat_rate
+model UserBuildingAccess {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id])
+  buildingId Int
+  building   Building @relation(fields: [buildingId], references: [id])
+
+  @@unique([userId, buildingId])
+}
+
+// ข้อมูลกิจการ/ผู้รับเงิน — จุดเดียวที่ module_contract และ module_receipt ดึงมา snapshot
+model BuildingPayeeSettings {
+  buildingId         Int      @id
+  building           Building @relation(fields: [buildingId], references: [id])
+  headerTextTemplate String?
+  payeeName          String?
+  payeeIdCardNo      String?
+  payeePhone         String?
+  payeeAddress       String?
+  logoUrl            String?
+  signatureImageUrl  String?
+  updatedAt          DateTime @updatedAt
+}
+
+// ค่าตั้งสาขา (branch defaults) — module_room ดึงมาใช้เมื่อห้องตั้ง "ใช้ตามสาขา" (live, ไม่ snapshot)
+model BuildingSettings {
+  buildingId            Int      @id
+  building              Building @relation(fields: [buildingId], references: [id])
+  defaultWaterMode      String   @default("flat") // flat | metered
+  defaultWaterRate      Float?
+  defaultElectricMode   String   @default("flat")
+  defaultElectricRate   Float?
+  defaultInternetFee    Float?
+  defaultCommonAreaFee  Float?
+  defaultMonthlyDeposit Float?
+  defaultDailyDeposit   Float?
+  parcelOverdueDays     Int      @default(3)
+  updatedAt             DateTime @updatedAt
+}
+
+// ===================== ห้องพัก (module_room) =====================
+
 model Room {
   id                Int      @id @default(autoincrement())
-  branchId          Int
-  branch            Branch   @relation(fields: [branchId], references: [id])
-  roomTypeId        Int
-  roomType          RoomType @relation(fields: [roomTypeId], references: [id])
+  buildingId        Int
+  building          Building @relation(fields: [buildingId], references: [id])
   roomNumber        String
-  floor             String?
-  currentMode       String   @default("monthly")
-  status            String   @default("available")
-  waterElectricMode String   @default("metered")
-  flatWaterRate     Float?
-  flatElectricRate  Float?
-  priceMonthly      Float?
-  priceDaily        Float?
-  active            Boolean  @default(true)
-  createdAt         DateTime @default(now())
+  floor             Int
+  status            String   @default("available") // available | occupied | reserved | maintenance
+  rentalTypeSupport String // daily | monthly | both
+  monthlyPrice      Float?
+  dailyPrice        Float?
+  monthlyDeposit    Float? // null = ใช้ค่า default จากสาขา
+  dailyDeposit      Float?
+  sizeSqm           Float?
 
-  bookings  Booking[]
-  contracts Contract[]
-  bills     Bill[]
-  meterReadings       MeterReading[]
-  maintenanceRequests MaintenanceRequest[]
+  // ต่อประเภทค่าใช้จ่าย: {excluded, useBranchDefault, type, rate/amount} — เก็บเป็น JSON string
+  utilityWater      String?
+  utilityElectric   String?
+  utilityInternet   String?
+  utilityCommonArea String?
 
-  @@unique([branchId, roomNumber])
+  extraMonthlyFees String? // JSON array [{name, amount}]
+  amenities        String? // JSON array of strings
+
+  coverImageId      Int?
+  maintenanceReason String?
+  notes             String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  images          RoomImage[]
+  bookings        Booking[]
+  occupancies     RoomOccupancy[]
+  contracts       Contract[]
+  bills           Bill[]
+  meterReadings   MeterReading[]
+  repairRequests  RepairRequest[]
+  maintenanceLogs MaintenanceLog[]
+  parcels         Parcel[]
+  expenses        Expense[]
+  otherIncomes    OtherIncome[]
+  deposits        Deposit[]
+  dailyBills      DailyBill[]
+
+  @@unique([buildingId, roomNumber])
 }
 
-model Customer {
-  id                     Int      @id @default(autoincrement())
-  name                   String
-  phone                  String
-  idCardNo               String?
-  address                String?
-  emergencyContactName   String?
-  emergencyContactPhone  String?
-  createdAt              DateTime @default(now())
-
-  bookings  Booking[]
-  contracts Contract[]
-  bills     Bill[]
-  notes               CustomerNote[]
-  maintenanceRequests MaintenanceRequest[]
+model RoomImage {
+  id         Int      @id @default(autoincrement())
+  roomId     Int
+  room       Room     @relation(fields: [roomId], references: [id])
+  buildingId Int
+  building   Building @relation(fields: [buildingId], references: [id])
+  url        String
+  createdAt  DateTime @default(now())
 }
 
-// bookingType: walkin | advance
-// paymentTiming: prepaid_full | pay_before_checkin | pay_after_checkout
-// status: booked | checked_in | checked_out | cancelled | no_show
+// ===================== จองห้อง (module_booking) =====================
+
+// status: pending | confirmed | cancelled | completed | archived
 model Booking {
-  id               Int      @id @default(autoincrement())
-  roomId           Int
-  room             Room     @relation(fields: [roomId], references: [id])
-  customerId       Int
-  customer         Customer @relation(fields: [customerId], references: [id])
-  checkinDate      DateTime
-  checkoutDate     DateTime
-  nights           Int
-  bookingType      String   @default("walkin")
-  paymentTiming    String   @default("pay_before_checkin")
-  baseAmount       Float
-  discountAmount   Float    @default(0)
-  discountReason   String?
-  lateCheckoutFee  Float    @default(0)
-  earlyCheckoutFee Float    @default(0)
-  totalAmount      Float
-  depositPaid      Float    @default(0)
-  status           String   @default("booked")
-  createdAt        DateTime @default(now())
+  id                   Int       @id @default(autoincrement())
+  bookingCode          String    @unique
+  buildingId           Int
+  building             Building  @relation(fields: [buildingId], references: [id])
+  roomId               Int
+  room                 Room      @relation(fields: [roomId], references: [id])
+  tenantId             Int?
+  tenant               Tenant?   @relation(fields: [tenantId], references: [id])
+  bookingType          String // monthly | daily
+  checkinDate          DateTime
+  contractDeadlineDate DateTime? // เฉพาะ monthly
+  nights               Int? // เฉพาะ daily
+  checkoutDate         DateTime? // เฉพาะ daily
+  note                 String?
+  status               String    @default("pending")
+  cancelReason         String?
+  depositRefunded      Boolean?
+  createdBy            Int?
+  createdAt            DateTime  @default(now())
+  checkedInAt          DateTime?
+  checkedInBy          Int?
+  archivedAt           DateTime?
 
-  bills Bill[]
+  payments BookingPayment[]
 }
 
-// status: draft | active | ended | terminated
-// (เวอร์ชัน prototype นี้ยังไม่มี e-signature/PDF — ใส่ทีหลังเมื่อเชื่อม LINE)
-model Contract {
-  id             Int      @id @default(autoincrement())
-  roomId         Int
-  room           Room     @relation(fields: [roomId], references: [id])
-  customerId     Int
-  customer       Customer @relation(fields: [customerId], references: [id])
-  startDate      DateTime
-  endDate        DateTime
-  monthlyRate    Float
-  depositAmount  Float    @default(0)
-  status         String   @default("active")
-  createdAt      DateTime @default(now())
-
-  bills Bill[]
+// เงินที่รับตอนจอง — เป็นแค่ยอดเครดิตทั่วไป ไม่ผูกอัตโนมัติว่าจะเข้าค่าเช่าหรือเข้ามัดจำ
+// (พนักงานเลือกเองตอนออกบิลแรกเข้า โดยปรับ BillLineItem ตรงๆ)
+model BookingPayment {
+  id        Int      @id @default(autoincrement())
+  bookingId Int
+  booking   Booking  @relation(fields: [bookingId], references: [id])
+  method    String // cash | transfer
+  accountId Int?
+  account   Account? @relation(fields: [accountId], references: [id])
+  amount    Float
+  slipUrl   String?
+  createdAt DateTime @default(now())
 }
 
-// billType: monthly | daily
-// status: issued | partial | paid | cancelled
-model Bill {
+// ===================== ผู้เช่า (module_tenant) =====================
+
+model Tenant {
+  id                    Int       @id @default(autoincrement())
+  buildingId            Int
+  building              Building  @relation(fields: [buildingId], references: [id])
+  name                  String
+  idCardImageUrl        String?
+  phone                 String?
+  gender                String?
+  age                   Int?
+  lineId                String?
+  lineUserId            String?
+  idCardNo              String?
+  email                 String?
+  previousAddress       String?
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  billLanguage          String    @default("th")
+  note                  String? // ใช้แทนระบบ blacklist/คะแนนที่ตัดออก
+  tenantType            String // daily | monthly
+  archivedAt            DateTime?
+  createdAt             DateTime  @default(now())
+
+  vehicles       TenantVehicle[]
+  occupancies    RoomOccupancy[]
+  bookings       Booking[]
+  contracts      Contract[]
+  bills          Bill[]
+  repairRequests RepairRequest[]
+  parcels        Parcel[]
+  otherIncomes   OtherIncome[]
+  dailyBills     DailyBill[]
+}
+
+model TenantVehicle {
+  id         Int     @id @default(autoincrement())
+  tenantId   Int
+  tenant     Tenant  @relation(fields: [tenantId], references: [id])
+  plateNo    String?
+  brandModel String?
+  color      String?
+}
+
+// การเข้าพักแต่ละห้อง แยกจากตัวผู้เช่า (1 ผู้เช่าเช่าได้หลายห้อง)
+// กติกา: 1 ห้อง ณ เวลาหนึ่ง มี status='active' ได้แค่ 1 record
+// "ผู้เช่าปัจจุบันของห้อง" ต้อง derive จากตารางนี้เสมอ ห้ามเก็บ FK ซ้ำบน Room
+model RoomOccupancy {
   id                  Int       @id @default(autoincrement())
-  branchId            Int
-  billType            String
-  contractId          Int?
-  contract            Contract? @relation(fields: [contractId], references: [id])
-  bookingId           Int?
-  booking             Booking?  @relation(fields: [bookingId], references: [id])
-  customerId          Int
-  customer            Customer  @relation(fields: [customerId], references: [id])
+  tenantId            Int
+  tenant              Tenant    @relation(fields: [tenantId], references: [id])
   roomId              Int
   room                Room      @relation(fields: [roomId], references: [id])
-  billingPeriodStart  DateTime
-  billingPeriodEnd    DateTime
-  roomCharge          Float     @default(0)
-  waterCharge         Float     @default(0)
-  electricCharge      Float     @default(0)
-  otherCharges        Float     @default(0)
-  otherChargesNote    String?
-  discountAmount      Float     @default(0)
-  totalAmount         Float
-  dueDate             DateTime
-  status              String    @default("issued")
+  checkinDate         DateTime
+  plannedCheckoutDate DateTime? // เฉพาะ tenantType = monthly ใช้ตัดสิน warning หมดเวลาพัก
+  depositAmount       Float?
+  status              String    @default("active") // active | moved_out
+  movedOutDate        DateTime?
+  movedOutReason      String?
   createdAt           DateTime  @default(now())
 
-  payments Payment[]
+  contracts Contract[]
 }
 
-// paymentMethod: cash | transfer | promptpay | other
-model Payment {
-  id            Int      @id @default(autoincrement())
-  billId        Int
-  bill          Bill     @relation(fields: [billId], references: [id])
-  amount        Float
-  paymentDate   DateTime
-  paymentMethod String   @default("cash")
-  note          String?
-  createdAt     DateTime @default(now())
+// ===================== เอกสารสัญญา (module_contract) =====================
+
+// Template ข้อสัญญากลางระดับอาคาร — แก้ที่ตั้งค่าเท่านั้น, สัญญาที่ generate แล้วเก็บ snapshot ผ่าน ContractClauseSelection
+model ContractClauseTemplate {
+  id                Int      @id @default(autoincrement())
+  buildingId        Int
+  building          Building @relation(fields: [buildingId], references: [id])
+  order             Int
+  title             String
+  titleEn           String?
+  body              String
+  bodyEn            String?
+  isDefaultIncluded Boolean  @default(true)
+
+  selections ContractClauseSelection[]
 }
 
-// meterType: water | electric
-// status: draft | confirmed | editable
+// status ไม่มี field (ตัดออกจากต้นแบบ) — "มีสัญญาแล้วหรือยัง" ดูจากหน้าห้อง/ผู้เช่าโดยตรง
+model Contract {
+  id          Int            @id @default(autoincrement())
+  buildingId  Int
+  building    Building       @relation(fields: [buildingId], references: [id])
+  occupancyId Int? // ไม่บังคับตอนสร้าง ผูกทีหลังได้
+  occupancy   RoomOccupancy? @relation(fields: [occupancyId], references: [id])
+  tenantId    Int
+  tenant      Tenant         @relation(fields: [tenantId], references: [id])
+  roomId      Int
+  room        Room           @relation(fields: [roomId], references: [id])
+
+  // snapshot ข้อมูลผู้รับเงิน ณ วันสร้างสัญญา (จาก BuildingPayeeSettings)
+  headerTextSnapshot    String?
+  payeeNameSnapshot     String?
+  payeeIdCardNoSnapshot String?
+  payeePhoneSnapshot    String?
+  payeeAddressSnapshot  String?
+
+  contractDate DateTime
+  startDate    DateTime
+  endDate      DateTime?
+  noEndDate    Boolean   @default(false)
+  isBilingual  Boolean   @default(false)
+
+  rentAmount             Float
+  depositAmount          Float  @default(0)
+  paymentDueDay          Int
+  lateFeePerDay          Float?
+  advanceRentAmount      Float?
+  electricalEquipmentFee Float?
+  furnitureEquipmentFee  Float?
+
+  noticeDaysBeforeTerminate Int     @default(30)
+  depositReturnDays         Int     @default(7)
+  allowedOverdueDays        Int     @default(7)
+  allowPets                 Boolean @default(false)
+  noSmoking                 Boolean @default(true)
+  additionalRules           String? // JSON array of text
+
+  requireWitness Boolean @default(false)
+  witnessNames   String? // JSON array, สูงสุด 4 ชื่อ
+
+  // แก้ไขสัญญาหลังเซ็นแล้ว → เคลียร์ 2 field นี้ทิ้งทันที ต้องเซ็นใหม่
+  ownerSignatureImage String?
+  signedAt            DateTime?
+
+  archivedAt DateTime? // soft-delete: สัญญาที่เซ็นแล้วลบจริงไม่ได้
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  clauseSelections ContractClauseSelection[]
+  bills            Bill[]
+  deposits         Deposit[]
+}
+
+model ContractClauseSelection {
+  id               Int                    @id @default(autoincrement())
+  contractId       Int
+  contract         Contract               @relation(fields: [contractId], references: [id])
+  clauseTemplateId Int
+  clauseTemplate   ContractClauseTemplate @relation(fields: [clauseTemplateId], references: [id])
+  included         Boolean                @default(true)
+
+  @@unique([contractId, clauseTemplateId])
+}
+
+// ===================== มิเตอร์น้ำ-ไฟ (module_meter) =====================
+
+// append-only ต่อห้อง — ไม่มี concept "รอบ/งวด" ระดับอาคาร
 model MeterReading {
   id              Int      @id @default(autoincrement())
   roomId          Int
   room            Room     @relation(fields: [roomId], references: [id])
-  meterType       String
-  billingMonth    String
-  previousReading Float    @default(0)
-  currentReading  Float
-  unitUsed        Float
-  ratePerUnit     Float
-  amount          Float
-  status          String   @default("draft")
-  flaggedAbnormal Boolean  @default(false)
+  buildingId      Int
+  building        Building @relation(fields: [buildingId], references: [id])
+  readingMonth    String // "YYYY-MM"
+  waterPrev       Float    @default(0)
+  waterCurrent    Float    @default(0)
+  waterUnits      Float    @default(0)
+  electricPrev    Float    @default(0)
+  electricCurrent Float    @default(0)
+  electricUnits   Float    @default(0)
+  recordedAt      DateTime @default(now())
+  recordedBy      Int?
+  billingStatus   String   @default("unbilled") // unbilled | billed
+  billId          Int?
+  bill            Bill?    @relation(fields: [billId], references: [id])
   createdAt       DateTime @default(now())
-
-  @@unique([roomId, meterType, billingMonth])
+  updatedAt       DateTime @updatedAt
 }
 
-model CustomerNote {
-  id         Int      @id @default(autoincrement())
-  customerId Int
-  customer   Customer @relation(fields: [customerId], references: [id])
-  note       String
-  createdAt  DateTime @default(now())
+// ===================== บิลรายเดือน / ใบเสร็จ-ใบกำกับภาษี (module_bill, module_receipt) =====================
+
+// ผู้เช่ารายวัน (walk-in) ไม่ใช้ตารางนี้ — อยู่ที่ DailyBill (module_accounting)
+// status: unpaid | partially_paid | pending_review | paid | cancelled (overdue คำนวณสด ไม่เก็บ)
+model Bill {
+  id             Int      @id @default(autoincrement())
+  billNo         String   @unique
+  buildingId     Int
+  building       Building @relation(fields: [buildingId], references: [id])
+  roomId         Int
+  room           Room     @relation(fields: [roomId], references: [id])
+  tenantId       Int
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  contractId     Int // snapshot ยอดจริงมาจากสัญญาเสมอ
+  contract       Contract @relation(fields: [contractId], references: [id])
+  billType       String // monthly | move_in
+  billingMonth   String // "YYYY-MM"
+  issueDate      DateTime
+  dueDate        DateTime // auto-calc จาก contract.paymentDueDay ตอนออกบิล ห้ามแก้หลังบิลออก
+  status         String   @default("unpaid")
+  discountAmount Float?
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  lineItems     BillLineItem[]
+  payments      Payment[]
+  meterReadings MeterReading[]
 }
 
-model Blacklist {
-  id        Int      @id @default(autoincrement())
-  phone     String
-  reason    String
-  active    Boolean  @default(true)
+model BillLineItem {
+  id          Int    @id @default(autoincrement())
+  billId      Int
+  bill        Bill   @relation(fields: [billId], references: [id])
+  itemType    String // rent | water | electric | internet | common_area | extra_fee | deposit | advance_rent | equipment_electrical | equipment_furniture | late_fee
+  description String
+  quantity    Float?
+  unitPrice   Float?
+  amount      Float
+}
+
+// การชำระเงิน — ทุกครั้งที่บันทึกสำเร็จ ออกใบเสร็จอัตโนมัติ (receiptNo), ใบกำกับภาษีเป็น toggle เสริม
+model Payment {
+  id         Int       @id @default(autoincrement())
+  billId     Int
+  bill       Bill      @relation(fields: [billId], references: [id])
+  amount     Float
+  method     String // cash | transfer
+  accountId  Int?
+  account    Account?  @relation(fields: [accountId], references: [id])
+  source     String    @default("admin_manual") // admin_manual | line_upload
+  slipImage  String?
+  verified   Boolean   @default(true)
+  verifiedBy Int?
+  verifiedAt DateTime?
+  paidAt     DateTime  @default(now())
+
+  issueTaxInvoice Boolean @default(false)
+  taxpayerName    String?
+  taxpayerTaxId   String?
+  taxpayerAddress String?
+
+  receiptNo            String? @unique
+  taxInvoiceNo         String? @unique
+  payeeNameSnapshot    String?
+  payeeAddressSnapshot String?
+  payeeTaxIdSnapshot   String?
+
   createdAt DateTime @default(now())
 }
 
-// priority: 1 (สูงสุด) - 5 (ต่ำสุด)
-// status: new | assigned | in_progress | done | cancelled
-model MaintenanceRequest {
-  id            Int       @id @default(autoincrement())
-  branchId      Int
-  branch        Branch    @relation(fields: [branchId], references: [id])
-  roomId        Int
-  room          Room      @relation(fields: [roomId], references: [id])
-  customerId    Int?
-  customer      Customer? @relation(fields: [customerId], references: [id])
-  description   String
-  category      String?
-  priority      Int       @default(3)
-  status        String    @default("new")
-  assignedTo    String?
-  cost          Float?
-  completedDate DateTime?
-  createdAt     DateTime  @default(now())
+// ===================== แจ้งซ่อม + งานซ่อมบำรุง (module_repair) =====================
+
+model RepairCategory {
+  id         Int      @id @default(autoincrement())
+  buildingId Int
+  building   Building @relation(fields: [buildingId], references: [id])
+  name       String
+  isDefault  Boolean  @default(false)
 }
 
-// role: owner | staff
-// permissions: comma-separated module codes staff can access, e.g. "A,B,C,D,F,G,H,M,L"
-model User {
-  id              Int      @id @default(autoincrement())
-  name            String
-  username        String   @unique
-  passwordHash    String
-  role            String   @default("staff")
-  canManageUsers  Boolean  @default(false)
-  permissions     String   @default("A,B,C,D,F,G,H,M,L")
-  active          Boolean  @default(true)
-  createdAt       DateTime @default(now())
+model Technician {
+  id         Int      @id @default(autoincrement())
+  buildingId Int
+  building   Building @relation(fields: [buildingId], references: [id])
+  name       String
+  phone      String?
+  active     Boolean  @default(true)
+
+  repairRequests  RepairRequest[]
+  maintenanceLogs MaintenanceLog[]
 }
 
+// priority: low | medium | high | urgent — status: pending | in_progress | completed
+model RepairRequest {
+  id                   Int         @id @default(autoincrement())
+  buildingId           Int
+  building             Building    @relation(fields: [buildingId], references: [id])
+  roomId               Int
+  room                 Room        @relation(fields: [roomId], references: [id])
+  tenantId             Int?
+  tenant               Tenant?     @relation(fields: [tenantId], references: [id])
+  source               String // staff_manual | line_liff
+  reporterName         String?
+  reporterPhone        String?
+  title                String
+  description          String
+  categoryName         String // snapshot ชื่อประเภท ไม่ใช่ live FK
+  priority             String
+  status               String      @default("pending")
+  assignedTechnicianId Int?
+  assignedTechnician   Technician? @relation(fields: [assignedTechnicianId], references: [id])
+  photos               String? // JSON array, สูงสุด 5 รูป
+  notes                String?
+  cost                 Float? // ไม่เชื่อม module ค่าใช้จ่าย โดยตั้งใจ
+  isRead               Boolean     @default(true)
+  completedAt          DateTime?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+}
+
+model SharedEquipment {
+  id         Int      @id @default(autoincrement())
+  buildingId Int
+  building   Building @relation(fields: [buildingId], references: [id])
+  type       String // washer | dryer | water_dispenser
+  name       String
+  createdAt  DateTime @default(now())
+
+  maintenanceLogs MaintenanceLog[]
+}
+
+// ล้างแอร์ (ผูกห้องตรง) หรือ อุปกรณ์ส่วนกลาง (ผูก SharedEquipment) — เก็บประวัติเท่านั้น ไม่มีแจ้งเตือนอัตโนมัติ
+model MaintenanceLog {
+  id           Int              @id @default(autoincrement())
+  buildingId   Int
+  building     Building         @relation(fields: [buildingId], references: [id])
+  category     String // aircon | shared_equipment
+  roomId       Int?
+  room         Room?            @relation(fields: [roomId], references: [id])
+  equipmentId  Int?
+  equipment    SharedEquipment? @relation(fields: [equipmentId], references: [id])
+  date         DateTime
+  technicianId Int?
+  technician   Technician?      @relation(fields: [technicianId], references: [id])
+  notes        String?
+  createdAt    DateTime         @default(now())
+}
+
+// ===================== พัสดุ (module_parcel) =====================
+
+// status: arrived | notified | picked_up — "ตกค้าง" เป็น flag คำนวณสด ไม่ใช่ physical state
+model Parcel {
+  id              Int       @id @default(autoincrement())
+  buildingId      Int
+  building        Building  @relation(fields: [buildingId], references: [id])
+  tenantId        Int?
+  tenant          Tenant?   @relation(fields: [tenantId], references: [id])
+  roomId          Int?
+  room            Room?     @relation(fields: [roomId], references: [id])
+  recipientName   String
+  deliveryCompany String?
+  trackingNo      String?
+  photoUrl        String?
+  receivedAt      DateTime
+  status          String    @default("arrived")
+  notifiedAt      DateTime?
+  pickedUpAt      DateTime?
+  notes           String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+// ===================== ฐานข้อมูลบัญชี (module_accounting, module_expense, module_other_income) =====================
+
+// master data ผู้ซื้อ/ผู้ขาย — ใช้ร่วมกันทุกอาคาร (ไม่ผูก buildingId)
+model Contact {
+  id            Int      @id @default(autoincrement())
+  name          String
+  taxId         String?
+  address       String?
+  phone         String?
+  email         String?
+  contactPerson String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  expenses     Expense[]
+  otherIncomes OtherIncome[]
+}
+
+// บัญชีเงินสด/ธนาคาร — แยกตามอาคาร ผู้ใช้เพิ่มเองได้ไม่จำกัด ลบได้เฉพาะยอดคงเหลือ = 0
+model Account {
+  id             Int      @id @default(autoincrement())
+  buildingId     Int
+  building       Building @relation(fields: [buildingId], references: [id])
+  name           String
+  type           String // cash | bank | credit_card | other
+  accountNumber  String?
+  openingBalance Float    @default(0)
+  status         String   @default("active") // active | inactive
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  payments            Payment[]
+  bookingPayments     BookingPayment[]
+  expensePayments     ExpensePayment[]
+  otherIncomePayments OtherIncomePayment[]
+  ledgerEntries       LedgerEntry[]
+  depositReturns      Deposit[]            @relation("DepositReturnedAccount")
+  dailyBills          DailyBill[]
+}
+
+// เดิมเคยเป็นส่วนหนึ่งของ "บิลกำหนดเอง" — ไม่ผูก room_id/contract_id บังคับ
 model Expense {
+  id                    Int       @id @default(autoincrement())
+  buildingId            Int
+  building              Building  @relation(fields: [buildingId], references: [id])
+  documentNo            String    @unique // "EXP-YYYY-MM-###" รันแยกต่ออาคาร รีเซ็ตรายเดือน
+  vendorContactId       Int?
+  vendorContact         Contact?  @relation(fields: [vendorContactId], references: [id])
+  vendorNameSnapshot    String?
+  vendorTaxIdSnapshot   String?
+  vendorAddressSnapshot String?
+  roomId                Int?
+  room                  Room?     @relation(fields: [roomId], references: [id])
+  date                  DateTime
+  purchaseType          String // cash | credit
+  dueDate               DateTime? // บังคับถ้า credit
+  vendorInvoiceNo       String?
+  whtAmount             Float? // memo field ไม่กระทบการคำนวณ
+  totalAmount           Float     @default(0) // รวมจาก line items
+  receiptImageUrls      String? // JSON array
+  notes                 String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  lineItems ExpenseLineItem[]
+  payments  ExpensePayment[]
+}
+
+model ExpenseLineItem {
+  id           Int     @id @default(autoincrement())
+  expenseId    Int
+  expense      Expense @relation(fields: [expenseId], references: [id])
+  title        String
+  category     String // ค่าน้ำ/ค่าไฟ/ซ่อมแซม/ค่าอินเตอร์เน็ต/เงินเดือน/วัสดุสิ้นเปลือง/อื่นๆ
+  amount       Float
+  vatMode      String  @default("none") // none | included | excluded
+  vatRate      Float   @default(7)
+  vatAmount    Float   @default(0)
+  totalWithVat Float
+  description  String?
+}
+
+model ExpensePayment {
+  id            Int      @id @default(autoincrement())
+  expenseId     Int
+  expense       Expense  @relation(fields: [expenseId], references: [id])
+  amount        Float
+  method        String // cash | transfer | check | credit_card
+  accountId     Int
+  account       Account  @relation(fields: [accountId], references: [id])
+  date          DateTime
+  slipImageUrls String? // JSON array
+  notes         String?
+  createdAt     DateTime @default(now())
+}
+
+// โครงสร้างเดียวกับ Expense ทุกจุด (คนละทิศทางเงิน) — ผู้ซื้อเลือกได้ทั้งผู้เช่าในระบบหรือ Contact ทั่วไป
+model OtherIncome {
+  id                   Int       @id @default(autoincrement())
+  buildingId           Int
+  building             Building  @relation(fields: [buildingId], references: [id])
+  documentNo           String    @unique // "INC-YYYY-MM-###"
+  buyerType            String // tenant | contact
+  buyerTenantId        Int?
+  buyerTenant          Tenant?   @relation(fields: [buyerTenantId], references: [id])
+  buyerContactId       Int?
+  buyerContact         Contact?  @relation(fields: [buyerContactId], references: [id])
+  buyerNameSnapshot    String?
+  buyerTaxIdSnapshot   String?
+  buyerAddressSnapshot String?
+  roomId               Int?
+  room                 Room?     @relation(fields: [roomId], references: [id])
+  date                 DateTime
+  saleType             String // cash | credit
+  dueDate              DateTime?
+  saleInvoiceNo        String?
+  whtAmount            Float?
+  totalAmount          Float     @default(0)
+  attachmentUrls       String? // JSON array
+  notes                String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  lineItems OtherIncomeLineItem[]
+  payments  OtherIncomePayment[]
+  deposits  Deposit[] // ริบเงินมัดจำ → สร้าง OtherIncome หมวด "เงินมัดจำริบ" อัตโนมัติ
+}
+
+model OtherIncomeLineItem {
+  id            Int         @id @default(autoincrement())
+  otherIncomeId Int
+  otherIncome   OtherIncome @relation(fields: [otherIncomeId], references: [id])
+  title         String
+  category      String // 10 หมวด fixed (ค่าปรับ/ค่าเช่าพื้นที่ส่วนกลาง/ดอกเบี้ยรับ/เงินมัดจำริบ/ฯลฯ)
+  amount        Float
+  vatMode       String      @default("none")
+  vatRate       Float       @default(7)
+  vatAmount     Float       @default(0)
+  totalWithVat  Float
+  description   String?
+}
+
+model OtherIncomePayment {
+  id            Int         @id @default(autoincrement())
+  otherIncomeId Int
+  otherIncome   OtherIncome @relation(fields: [otherIncomeId], references: [id])
+  amount        Float
+  method        String // cash | transfer | check | credit_card
+  accountId     Int
+  account       Account     @relation(fields: [accountId], references: [id])
+  date          DateTime
+  slipImageUrls String?
+  notes         String?
+  createdAt     DateTime    @default(now())
+}
+
+// สร้างอัตโนมัติทุกครั้งที่มีเงินเข้า/ออกจริง — ไม่มี draft/post
+model LedgerEntry {
   id          Int      @id @default(autoincrement())
-  branchId    Int
-  branch      Branch   @relation(fields: [branchId], references: [id])
-  category    String
-  description String?
+  buildingId  Int
+  building    Building @relation(fields: [buildingId], references: [id])
+  accountId   Int
+  account     Account  @relation(fields: [accountId], references: [id])
+  direction   String // in | out
   amount      Float
-  expenseDate DateTime
+  date        DateTime
+  sourceType  String // bill_payment | expense_payment | other_income_payment | deposit_refund | deposit_forfeit | daily_bill
+  sourceId    Int
+  description String?
   createdAt   DateTime @default(now())
+}
+
+// เงินมัดจำ — ตัดสินใจแล้ว: มีแค่ "คืนเต็มจำนวน" หรือ "ริบทั้งหมด" เท่านั้น ไม่มีหักบางส่วน
+// ค่าเสียหาย/ทำความสะอาดตอนย้ายออก ให้ไปออกบิลแยกเรียกเก็บต่างหาก ไม่หักกลบกับ Deposit นี้
+model Deposit {
+  id                     Int          @id @default(autoincrement())
+  contractId             Int? // ไม่บังคับ — เก็บมัดจำก่อนสัญญาเสร็จได้ ผูกทีหลังได้
+  contract               Contract?    @relation(fields: [contractId], references: [id])
+  roomId                 Int
+  room                   Room         @relation(fields: [roomId], references: [id])
+  amount                 Float
+  collectedDate          DateTime
+  status                 String       @default("held") // held | returned | forfeited
+  returnedDate           DateTime?
+  returnedAccountId      Int?
+  returnedAccount        Account?     @relation("DepositReturnedAccount", fields: [returnedAccountId], references: [id])
+  forfeitedDate          DateTime?
+  forfeitedOtherIncomeId Int?
+  forfeitedOtherIncome   OtherIncome? @relation(fields: [forfeitedOtherIncomeId], references: [id])
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+}
+
+// บิลผู้เช่ารายวัน/walk-in — จ่ายล่วงหน้าเต็มจำนวนเสมอตอน check-in ไม่มีสถานะค้างชำระ
+model DailyBill {
+  id                    Int      @id @default(autoincrement())
+  buildingId            Int
+  building              Building @relation(fields: [buildingId], references: [id])
+  documentNo            String   @unique // "DLY-YYYY-MM-###"
+  roomId                Int
+  room                  Room     @relation(fields: [roomId], references: [id])
+  tenantId              Int
+  tenant                Tenant   @relation(fields: [tenantId], references: [id])
+  checkinDate           DateTime
+  nights                Int
+  dailyPriceSnapshot    Float
+  depositAmountSnapshot Float?
+  totalAmount           Float // nights × dailyPriceSnapshot (ไม่รวมมัดจำ)
+  accountId             Int
+  account               Account  @relation(fields: [accountId], references: [id])
+  method                String // cash | transfer | credit_card
+  createdAt             DateTime @default(now())
+}
+
+// ===================== ประวัติการใช้งาน (module_audit) =====================
+
+// หน้ากลางอย่างเดียว owner-only — log เฉพาะ action สำคัญ (สร้าง/ลบ/เงิน/เปลี่ยนสถานะ) ไม่ log การแก้ไข field ทั่วไป
+model AuditLog {
+  id                Int      @id @default(autoincrement())
+  buildingId        Int
+  building          Building @relation(fields: [buildingId], references: [id])
+  actorType         String // user | system
+  actorUserId       Int?
+  actorUser         User?    @relation(fields: [actorUserId], references: [id])
+  actorNameSnapshot String
+  actionType        String // create | delete | payment | status_change
+  moduleTag         String
+  entityType        String
+  entityId          String
+  entityLabel       String
+  description       String
+  oldValue          String? // JSON, เตรียมไว้เผื่ออนาคต ยังไม่มี UI แสดง
+  newValue          String? // JSON
+  createdAt         DateTime @default(now())
 }
