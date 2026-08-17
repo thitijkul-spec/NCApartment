@@ -9,3 +9,5 @@ dist
 prisma/dev.db
 prisma/dev.db-journal
 .claude/settings.local.json
+public/uploads
+*.tsbuildinfo

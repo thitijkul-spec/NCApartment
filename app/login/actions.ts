@@ -1,7 +1,8 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { createSession, hashPassword, verifyPassword } from "@/lib/auth";
+import { createSession, hashPassword, setCurrentBuildingId, verifyPassword } from "@/lib/auth";
+import { seedNewBuildingDefaults } from "@/lib/building-seed";
 import { redirect } from "next/navigation";
 
 export async function bootstrapOwner(formData: FormData) {
@@ -11,20 +12,31 @@ export async function bootstrapOwner(formData: FormData) {
   const name = String(formData.get("name") || "").trim();
   const username = String(formData.get("username") || "").trim();
   const password = String(formData.get("password") || "");
-  if (!name || !username || password.length < 4) return;
+  const buildingName = String(formData.get("buildingName") || "").trim();
+  if (!name || !username || password.length < 4 || !buildingName) return;
 
-  const user = await prisma.user.create({
-    data: {
-      name,
-      username,
-      passwordHash: hashPassword(password),
-      role: "owner",
-      canManageUsers: true,
-      permissions: "A,B,C,D,F,G,H,M,L",
-    },
+  const { user, building } = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: {
+        name,
+        username,
+        passwordHash: hashPassword(password),
+        role: "owner",
+        permissions: "",
+      },
+    });
+    const building = await tx.building.create({
+      data: {
+        name: buildingName,
+        settings: { create: {} },
+      },
+    });
+    return { user, building };
   });
 
+  await seedNewBuildingDefaults(building.id);
   await createSession(user.id);
+  await setCurrentBuildingId(building.id);
   redirect("/");
 }
 

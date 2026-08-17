@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type ReactElement } from "react";
+import { usePathname } from "next/navigation";
 import { ChevronDownIcon } from "./icons";
 
 type NavLink = { href: string; label: string; icon: ReactElement };
@@ -8,6 +9,7 @@ type NavGroup = { label: string; href?: string; icon: ReactElement; items: NavLi
 type NavEntry = ({ kind: "link" } & NavLink) | ({ kind: "group" } & NavGroup);
 
 export default function SidebarNav({ entries }: { entries: NavEntry[] }) {
+  const pathname = usePathname();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   function toggle(label: string) {
@@ -19,12 +21,20 @@ export default function SidebarNav({ entries }: { entries: NavEntry[] }) {
     });
   }
 
+  function isActive(href: string) {
+    return pathname === href || pathname.startsWith(href + "/");
+  }
+
   return (
     <nav>
       {entries.map((entry) => {
         if (entry.kind === "link") {
           return (
-            <a key={entry.href} href={entry.href} className="nav-link">
+            <a
+              key={entry.href}
+              href={entry.href}
+              className={`nav-link${isActive(entry.href) ? " active" : ""}`}
+            >
               <span className="nav-icon">{entry.icon}</span>
               {entry.label}
             </a>
@@ -37,7 +47,12 @@ export default function SidebarNav({ entries }: { entries: NavEntry[] }) {
           <div key={entry.label} className="nav-group">
             <div className="nav-group-title-row">
               {entry.href ? (
-                <a href={entry.href} className="nav-group-title nav-group-title-link">
+                <a
+                  href={entry.href}
+                  className={`nav-group-title nav-group-title-link${
+                    isActive(entry.href) ? " active" : ""
+                  }`}
+                >
                   <span className="nav-icon">{entry.icon}</span>
                   {entry.label}
                 </a>
@@ -60,7 +75,11 @@ export default function SidebarNav({ entries }: { entries: NavEntry[] }) {
             </div>
             {isOpen &&
               entry.items.map((item) => (
-                <a key={item.href} href={item.href} className="nav-link nav-subitem">
+                <a
+                  key={item.href}
+                  href={item.href}
+                  className={`nav-link nav-subitem${isActive(item.href) ? " active" : ""}`}
+                >
                   <span className="nav-icon">{item.icon}</span>
                   {item.label}
                 </a>

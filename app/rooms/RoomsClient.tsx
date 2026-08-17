@@ -1,192 +1,105 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
-import {
-  BuildingIcon,
-  CheckSquareIcon,
-  ChevronDownIcon,
-  GridIcon,
-  ListIcon,
-  PlusIcon,
-  SettingsIcon,
-  TrashIcon,
-  XIcon,
-  ZapIcon,
-} from "../icons";
-import {
-  bulkSetRoomStatus,
-  createRoom,
-  createRoomsBulk,
-  createRoomType,
-  setRoomStatus,
-} from "./actions";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import type { RoomWithRelations, TenantOption, BuildingSettings } from "./types";
+import { ROOM_STATUS_LABEL, ROOM_STATUS_BADGE_CLASS, rentalTypeLabel } from "@/lib/room-utils";
+import RoomFormModal from "./RoomFormModal";
+import RoomDetailModal from "./RoomDetailModal";
+import BulkCreateModal from "./BulkCreateModal";
+import BulkEditModal from "./BulkEditModal";
+import { DoorIcon, GridIcon, ListIcon, CheckSquareIcon, PlusIcon, PersonIcon } from "../icons";
 
-type RoomType = {
-  id: number;
-  name: string;
-  priceDaily: number | null;
-  priceMonthly: number | null;
-  priceDeposit: number | null;
-  maxOccupancy: number | null;
-};
+type FilterTab = "all" | "monthly" | "daily" | "available" | "occupied" | "maintenance";
 
-type Room = {
-  id: number;
-  roomNumber: string;
-  floor: string | null;
-  currentMode: string;
-  status: string;
-  waterElectricMode: string;
-  priceMonthly: number | null;
-  priceDaily: number | null;
-  roomType: RoomType;
-};
-
-const statusLabel: Record<string, string> = {
+const FILTER_LABELS: Record<FilterTab, string> = {
+  all: "ทั้งหมด",
+  monthly: "รองรับรายเดือน",
+  daily: "รองรับรายวัน",
   available: "ว่าง",
-  unavailable: "ไม่ว่าง",
-  blocked: "ปิดปรับปรุง",
+  occupied: "มีผู้พัก",
+  maintenance: "ปิดปรับปรุง",
 };
 
-type BulkRow = {
-  key: string;
-  roomNumber: string;
-  floor: string;
-  mode: string;
-  priceMonthly: string;
-  priceDaily: string;
-  status: string;
-};
-
-function makeKey() {
-  return Math.random().toString(36).slice(2);
+function fmtDate(d: Date | string | null | undefined) {
+  if (!d) return "-";
+  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" });
 }
 
-function generateBulkRows(
-  startFloor: number,
-  endFloor: number,
-  startNum: number,
-  endNum: number,
-  usePrefix: boolean,
-  monthlyPrice: string,
-  dailyPrice: string,
-  mode: string
-): BulkRow[] {
-  const rows: BulkRow[] = [];
-  if (!startFloor || !endFloor || !startNum || !endNum || startFloor > endFloor || startNum > endNum) {
-    return rows;
-  }
-  for (let floor = startFloor; floor <= endFloor; floor++) {
-    for (let n = startNum; n <= endNum; n++) {
-      const roomNumber = usePrefix ? `${floor}${String(n).padStart(2, "0")}` : String(n);
-      rows.push({
-        key: makeKey(),
-        roomNumber,
-        floor: String(floor),
-        mode,
-        priceMonthly: monthlyPrice,
-        priceDaily: dailyPrice,
-        status: "available",
-      });
-    }
-  }
-  return rows;
-}
-
-export default function RoomsClient({ rooms, roomTypes }: { rooms: Room[]; roomTypes: RoomType[] }) {
-  const router = useRouter();
-  const [, startTransition] = useTransition();
-
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
-  const [activeTab, setActiveTab] = useState<"all" | "monthly" | "daily" | "available">("all");
+export default function RoomsClient({
+  rooms,
+  settings,
+  tenants,
+  buildingName,
+}: {
+  rooms: RoomWithRelations[];
+  settings: BuildingSettings | null;
+  tenants: TenantOption[];
+  buildingName: string;
+}) {
+  const [view, setView] = useState<"grid" | "list">("grid");
+  const [filter, setFilter] = useState<FilterTab>("all");
   const [multiSelect, setMultiSelect] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [collapsedFloors, setCollapsedFloors] = useState<Set<string>>(new Set());
-
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [addTab, setAddTab] = useState<"single" | "bulk">("single");
-  const [showTypeModal, setShowTypeModal] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [showAdd, setShowAdd] = useState(false);
+  const [showBulkCreate, setShowBulkCreate] = useState(false);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const [editingRoom, setEditingRoom] = useState<RoomWithRelations | null>(null);
+  const [detailRoom, setDetailRoom] = useState<RoomWithRelations | null>(null);
+  const [detailInitialTab, setDetailInitialTab] = useState<"ข้อมูลห้อง" | "ผู้เช่า">("ข้อมูลห้อง");
   const [toast, setToast] = useState<string | null>(null);
 
-  const [singleError, setSingleError] = useState<string | null>(null);
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    const openRoomId = searchParams.get("openRoom");
+    if (!openRoomId) return;
+    const room = rooms.find((r) => r.id === Number(openRoomId));
+    if (room) {
+      setDetailRoom(room);
+      if (searchParams.get("tab") === "ผู้เช่า") setDetailInitialTab("ผู้เช่า");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
-  const [startFloor, setStartFloor] = useState("1");
-  const [endFloor, setEndFloor] = useState("1");
-  const [startNum, setStartNum] = useState("1");
-  const [endNum, setEndNum] = useState("10");
-  const [monthlyPrice, setMonthlyPrice] = useState("3000");
-  const [dailyPrice, setDailyPrice] = useState("500");
-  const [usePrefix, setUsePrefix] = useState(true);
-  const [bulkMode, setBulkMode] = useState("monthly");
-  const [bulkRows, setBulkRows] = useState<BulkRow[]>(() =>
-    generateBulkRows(1, 1, 1, 10, true, "3000", "500", "monthly")
-  );
-  const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set());
-
-  function showToast(text: string) {
-    setToast(text);
+  function notify(msg: string) {
+    setToast(msg);
     setTimeout(() => setToast(null), 3500);
   }
 
-  function regenerateRows(overrides: Partial<{
-    startFloor: string;
-    endFloor: string;
-    startNum: string;
-    endNum: string;
-    usePrefix: boolean;
-    monthlyPrice: string;
-    dailyPrice: string;
-    mode: string;
-  }> = {}) {
-    const sf = Number(overrides.startFloor ?? startFloor);
-    const ef = Number(overrides.endFloor ?? endFloor);
-    const sn = Number(overrides.startNum ?? startNum);
-    const en = Number(overrides.endNum ?? endNum);
-    const up = overrides.usePrefix ?? usePrefix;
-    const mp = overrides.monthlyPrice ?? monthlyPrice;
-    const dp = overrides.dailyPrice ?? dailyPrice;
-    const md = overrides.mode ?? bulkMode;
-    setBulkRows(generateBulkRows(sf, ef, sn, en, up, mp, dp, md));
-  }
-
-  const counts = useMemo(() => {
-    return {
+  const counts = useMemo(
+    () => ({
       all: rooms.length,
-      monthly: rooms.filter((r) => r.currentMode === "monthly").length,
-      daily: rooms.filter((r) => r.currentMode === "daily").length,
+      monthly: rooms.filter((r) => r.rentalTypeSupport !== "daily").length,
+      daily: rooms.filter((r) => r.rentalTypeSupport !== "monthly").length,
       available: rooms.filter((r) => r.status === "available").length,
-    };
-  }, [rooms]);
+      occupied: rooms.filter((r) => r.status === "occupied").length,
+      maintenance: rooms.filter((r) => r.status === "maintenance").length,
+    }),
+    [rooms]
+  );
 
-  const filteredRooms = useMemo(() => {
-    if (activeTab === "monthly") return rooms.filter((r) => r.currentMode === "monthly");
-    if (activeTab === "daily") return rooms.filter((r) => r.currentMode === "daily");
-    if (activeTab === "available") return rooms.filter((r) => r.status === "available");
-    return rooms;
-  }, [rooms, activeTab]);
-
-  const floorGroups = useMemo(() => {
-    const groups = new Map<string, Room[]>();
-    for (const room of filteredRooms) {
-      const key = room.floor || "ไม่ระบุชั้น";
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(room);
+  const filtered = useMemo(() => {
+    switch (filter) {
+      case "monthly":
+        return rooms.filter((r) => r.rentalTypeSupport !== "daily");
+      case "daily":
+        return rooms.filter((r) => r.rentalTypeSupport !== "monthly");
+      case "available":
+        return rooms.filter((r) => r.status === "available");
+      case "occupied":
+        return rooms.filter((r) => r.status === "occupied");
+      case "maintenance":
+        return rooms.filter((r) => r.status === "maintenance");
+      default:
+        return rooms;
     }
-    return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0], "th", { numeric: true }));
-  }, [filteredRooms]);
+  }, [rooms, filter]);
 
-  function toggleFloorCollapse(floor: string) {
-    setCollapsedFloors((prev) => {
-      const next = new Set(prev);
-      if (next.has(floor)) next.delete(floor);
-      else next.add(floor);
-      return next;
-    });
-  }
+  const floors = useMemo(() => Array.from(new Set(filtered.map((r) => r.floor))).sort((a, b) => a - b), [filtered]);
 
-  function toggleSelected(id: number) {
-    setSelectedIds((prev) => {
+  function toggleSelect(id: number) {
+    setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -194,719 +107,284 @@ export default function RoomsClient({ rooms, roomTypes }: { rooms: Room[]; roomT
     });
   }
 
-  function handleBulkStatusChange(status: string) {
-    startTransition(async () => {
-      await bulkSetRoomStatus(Array.from(selectedIds), status);
-      showToast(`เปลี่ยนสถานะ ${selectedIds.size} ห้องแล้ว`);
-      setSelectedIds(new Set());
-      router.refresh();
-    });
+  function exitMultiSelect() {
+    setMultiSelect(false);
+    setSelected(new Set());
   }
 
-  async function handleSingleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setSingleError(null);
-    const formData = new FormData(e.currentTarget);
-    startTransition(async () => {
-      const result = await createRoom(formData);
-      if (result?.error) {
-        setSingleError(result.error);
-        return;
-      }
-      showToast("เพิ่มห้องพักสำเร็จ");
-      setShowAddModal(false);
-      router.refresh();
-    });
-  }
-
-  function handleBulkSubmit() {
-    const rowsPayload = bulkRows.map((r) => ({
-      roomNumber: r.roomNumber,
-      floor: r.floor,
-      mode: r.mode,
-      priceMonthly: r.priceMonthly ? Number(r.priceMonthly) : null,
-      priceDaily: r.priceDaily ? Number(r.priceDaily) : null,
-      status: r.status,
-    }));
-    startTransition(async () => {
-      const result = await createRoomsBulk(rowsPayload);
-      if (result.skipped > 0) {
-        showToast(`สร้างสำเร็จ ${result.created} ห้อง ข้ามซ้ำ ${result.skipped} ห้อง (${result.skippedNumbers.join(", ")})`);
-      } else {
-        showToast(`สร้างสำเร็จ ${result.created} ห้อง`);
-      }
-      setShowAddModal(false);
-      router.refresh();
-    });
-  }
-
-  function updateRow(key: string, field: keyof BulkRow, value: string) {
-    setBulkRows((prev) => prev.map((r) => (r.key === key ? { ...r, [field]: value } : r)));
-  }
-
-  function removeRow(key: string) {
-    setBulkRows((prev) => prev.filter((r) => r.key !== key));
-  }
-
-  function removeFloorRows(floor: string) {
-    setBulkRows((prev) => prev.filter((r) => r.floor !== floor));
-  }
-
-  const bulkFloorGroups = useMemo(() => {
-    const groups = new Map<string, BulkRow[]>();
-    for (const row of bulkRows) {
-      if (!groups.has(row.floor)) groups.set(row.floor, []);
-      groups.get(row.floor)!.push(row);
-    }
-    return Array.from(groups.entries());
-  }, [bulkRows]);
+  const selectedRooms = rooms.filter((r) => selected.has(r.id));
 
   return (
     <div>
       <div className="page-header">
         <div>
           <div className="page-header-title">
-            <BuildingIcon size={24} />
-            จัดการห้องพัก
-            <button
-              type="button"
-              className="plain-icon-btn"
-              style={{ color: "var(--muted)" }}
-              onClick={() => setShowTypeModal(true)}
-              title="ประเภทห้อง"
-            >
-              <SettingsIcon size={18} />
-            </button>
+            <DoorIcon size={24} /> จัดการห้องพัก
           </div>
-          <p className="page-header-subtitle">สถานะและข้อมูลห้องพักทั้งหมดของคุณ</p>
+          <p className="page-header-subtitle">สถานะและข้อมูลห้องพักทั้งหมดของ {buildingName}</p>
         </div>
         <div className="page-header-actions">
           <div className="icon-btn-group">
-            <button
-              type="button"
-              className={`icon-btn ${viewMode === "grid" ? "active" : ""}`}
-              onClick={() => setViewMode("grid")}
-              title="มุมมองการ์ด"
-            >
+            <button className={`icon-btn${view === "grid" ? " active" : ""}`} onClick={() => setView("grid")} title="Grid">
               <GridIcon size={18} />
             </button>
-            <button
-              type="button"
-              className={`icon-btn ${viewMode === "list" ? "active" : ""}`}
-              onClick={() => setViewMode("list")}
-              title="มุมมองตาราง"
-            >
+            <button className={`icon-btn${view === "list" ? " active" : ""}`} onClick={() => setView("list")} title="List">
               <ListIcon size={18} />
             </button>
           </div>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => {
-              setMultiSelect((v) => !v);
-              setSelectedIds(new Set());
-            }}
-          >
-            <CheckSquareIcon size={16} />
-            เลือกหลายห้อง
+          <button className="secondary" onClick={() => (multiSelect ? exitMultiSelect() : setMultiSelect(true))}>
+            <CheckSquareIcon size={16} /> {multiSelect ? "ออกจากโหมดเลือก" : "เลือกหลายห้อง"}
           </button>
-          <button type="button" className="secondary" onClick={() => setShowTypeModal(true)}>
-            <SettingsIcon size={16} />
-            ประเภทห้อง
-          </button>
-          <button type="button" onClick={() => setShowAddModal(true)}>
-            <PlusIcon size={16} />
-            เพิ่มห้องพัก
-          </button>
+          <div style={{ position: "relative" }}>
+            <button onClick={() => setShowAddMenu((s) => !s)}>
+              <PlusIcon size={16} /> เพิ่มห้องพัก
+            </button>
+            {showAddMenu && (
+              <div className="card" style={{ position: "absolute", right: 0, top: 44, zIndex: 10, padding: 8, margin: 0, width: 200 }}>
+                <button
+                  className="secondary"
+                  style={{ width: "100%", marginBottom: 6 }}
+                  onClick={() => {
+                    setShowAdd(true);
+                    setShowAddMenu(false);
+                  }}
+                >
+                  + เพิ่มห้องพัก
+                </button>
+                <button
+                  className="secondary"
+                  style={{ width: "100%" }}
+                  onClick={() => {
+                    setShowBulkCreate(true);
+                    setShowAddMenu(false);
+                  }}
+                >
+                  สร้างหลายห้อง
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="tabs">
-        <div className={`tab ${activeTab === "all" ? "active" : ""}`} onClick={() => setActiveTab("all")}>
-          ทั้งหมด ({counts.all})
-        </div>
-        <div
-          className={`tab ${activeTab === "monthly" ? "active" : ""}`}
-          onClick={() => setActiveTab("monthly")}
-        >
-          รองรับรายเดือน ({counts.monthly})
-        </div>
-        <div className={`tab ${activeTab === "daily" ? "active" : ""}`} onClick={() => setActiveTab("daily")}>
-          รองรับรายวัน ({counts.daily})
-        </div>
-        <div
-          className={`tab ${activeTab === "available" ? "active" : ""}`}
-          onClick={() => setActiveTab("available")}
-        >
-          ว่าง ({counts.available})
-        </div>
-      </div>
+      {toast && <div className="toast">{toast}</div>}
 
-      {multiSelect && selectedIds.size > 0 && (
-        <div className="card" style={{ padding: 14, marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 14 }}>เลือกแล้ว {selectedIds.size} ห้อง — เปลี่ยนสถานะเป็น:</span>
-          <div className="status-buttons">
-            <button type="button" className="secondary" onClick={() => handleBulkStatusChange("available")}>
-              ว่าง
+      {multiSelect && selected.size > 0 && (
+        <div className="bulk-preview-note" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>
+            เลือก {selected.size} ห้อง —{" "}
+            <button
+              type="button"
+              className="plain-icon-btn"
+              style={{ width: "auto", textDecoration: "underline" }}
+              onClick={() => setSelected(new Set())}
+            >
+              ยกเลิก
             </button>
-            <button type="button" className="secondary" onClick={() => handleBulkStatusChange("unavailable")}>
-              ไม่ว่าง
-            </button>
-            <button type="button" className="secondary" onClick={() => handleBulkStatusChange("blocked")}>
-              ปิดปรับปรุง
+          </span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setShowBulkEdit(true)}>แก้ไขที่เลือก</button>
+            <button
+              className="danger"
+              onClick={async () => {
+                if (!confirm(`ยืนยันลบ ${selected.size} ห้อง?`)) return;
+                const { bulkDeleteRooms } = await import("./actions");
+                const formData = new FormData();
+                selected.forEach((id) => formData.append("roomIds", String(id)));
+                const result = await bulkDeleteRooms(formData);
+                if (result?.error) alert(result.error);
+                else {
+                  notify("ลบห้องที่เลือกแล้ว");
+                  exitMultiSelect();
+                }
+              }}
+            >
+              ลบที่เลือก
             </button>
           </div>
         </div>
       )}
 
-      {rooms.length === 0 ? (
-        <p className="empty">ยังไม่มีห้องพัก — กด "เพิ่มห้องพัก" เพื่อเริ่มต้น</p>
-      ) : viewMode === "list" ? (
-        <div className="card">
-          <table>
-            <thead>
-              <tr>
-                <th>เลขห้อง</th>
-                <th>ชั้น</th>
-                <th>รูปแบบ</th>
-                <th>ราคา/เดือน</th>
-                <th>ราคา/วัน</th>
-                <th>สถานะ</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredRooms.map((room) => (
-                <tr key={room.id}>
-                  <td>{room.roomNumber}</td>
-                  <td>{room.floor ?? "-"}</td>
-                  <td>{room.currentMode === "daily" ? "รายวัน" : "รายเดือน"}</td>
-                  <td>{room.priceMonthly ?? room.roomType.priceMonthly ?? "-"}</td>
-                  <td>{room.priceDaily ?? room.roomType.priceDaily ?? "-"}</td>
-                  <td>
-                    <select
-                      key={room.status}
-                      className="room-card-status-select"
-                      defaultValue={room.status}
-                      onChange={(e) => {
-                        startTransition(async () => {
-                          await setRoomStatus(room.id, e.target.value);
-                          router.refresh();
-                        });
-                      }}
-                    >
-                      <option value="available">ว่าง</option>
-                      <option value="unavailable">ไม่ว่าง</option>
-                      <option value="blocked">ปิดปรับปรุง</option>
-                    </select>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        floorGroups.map(([floor, floorRooms]) => (
+      <div className="tabs">
+        {(Object.keys(FILTER_LABELS) as FilterTab[]).map((f) => (
+          <button key={f} className={`tab${filter === f ? " active" : ""}`} onClick={() => setFilter(f)}>
+            {FILTER_LABELS[f]} ({counts[f]})
+          </button>
+        ))}
+      </div>
+
+      {floors.length === 0 && <p className="empty">ไม่พบห้องพักตามเงื่อนไขนี้</p>}
+
+      {floors.map((floor) => {
+        const floorRooms = filtered.filter((r) => r.floor === floor);
+        return (
           <div key={floor} className="floor-section">
             <div className="floor-section-header">
               <span className="floor-badge">ชั้น {floor}</span>
               <span className="floor-count">{floorRooms.length} ห้อง</span>
             </div>
-            <div className="room-grid">
-              {floorRooms.map((room) => {
-                const effMonthly = room.priceMonthly ?? room.roomType.priceMonthly;
-                const effDaily = room.priceDaily ?? room.roomType.priceDaily;
-                const selected = selectedIds.has(room.id);
-                return (
-                  <div key={room.id} className={`room-card ${selected ? "selected" : ""}`}>
-                    {multiSelect && (
-                      <input
-                        type="checkbox"
-                        className="room-card-checkbox"
-                        checked={selected}
-                        onChange={() => toggleSelected(room.id)}
-                      />
-                    )}
-                    <div className="room-card-top" style={{ marginLeft: multiSelect ? 22 : 0 }}>
-                      <div>
-                        <div className="room-card-number">{room.roomNumber}</div>
-                        <div className="room-card-floor">ชั้น {room.floor ?? "-"}</div>
-                      </div>
-                      <span className={`status-dot ${room.status}`} title={statusLabel[room.status]} />
-                    </div>
 
-                    <span className={`badge ${room.status}`} style={{ width: "fit-content" }}>
-                      {statusLabel[room.status]}
-                    </span>
-
-                    <div className="room-card-prices">
-                      {effMonthly != null && (
-                        <div className="room-card-price-row">
-                          <span>฿{effMonthly.toLocaleString()}/เดือน</span>
-                          <span className="price-tag">รายเดือน</span>
-                        </div>
-                      )}
-                      {effDaily != null && (
-                        <div className="room-card-price-row">
-                          <span>฿{effDaily.toLocaleString()}/วัน</span>
-                          <span className="price-tag">รายวัน</span>
-                        </div>
-                      )}
-                    </div>
-
-                    <select
-                      key={room.status}
-                      className="room-card-status-select"
-                      defaultValue={room.status}
-                      onChange={(e) => {
-                        startTransition(async () => {
-                          await setRoomStatus(room.id, e.target.value);
-                          router.refresh();
-                        });
-                      }}
-                    >
-                      <option value="available">ว่าง</option>
-                      <option value="unavailable">ไม่ว่าง</option>
-                      <option value="blocked">ปิดปรับปรุง</option>
-                    </select>
-
-                    {room.status === "available" && (
-                      <a
-                        href={`/bookings?roomId=${room.id}`}
-                        className="btn secondary"
-                        style={{ width: "100%", fontSize: 13 }}
-                      >
-                        <ZapIcon size={14} />
-                        Check-in ด่วน
-                      </a>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ))
-      )}
-
-      {/* ---------- Add room modal ---------- */}
-      {showAddModal && (
-        <div className="modal-overlay" onClick={() => setShowAddModal(false)}>
-          <div
-            className={`modal ${addTab === "bulk" ? "modal-wide" : ""}`}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="modal-header">
-              <h2>เพิ่มห้องพัก</h2>
-              <button type="button" className="modal-close" onClick={() => setShowAddModal(false)}>
-                <XIcon size={18} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <div className="modal-tabs">
-                <button
-                  type="button"
-                  className={`modal-tab ${addTab === "single" ? "active" : ""}`}
-                  onClick={() => setAddTab("single")}
-                >
-                  ทีละห้อง
-                </button>
-                <button
-                  type="button"
-                  className={`modal-tab ${addTab === "bulk" ? "active" : ""}`}
-                  onClick={() => setAddTab("bulk")}
-                >
-                  หลายห้องพร้อมกัน
-                </button>
+            {view === "grid" ? (
+              <div className="room-grid">
+                {floorRooms.map((room) => (
+                  <RoomCard
+                    key={room.id}
+                    room={room}
+                    multiSelect={multiSelect}
+                    selected={selected.has(room.id)}
+                    onToggleSelect={() => toggleSelect(room.id)}
+                    onOpen={() => setDetailRoom(room)}
+                  />
+                ))}
               </div>
-
-              {addTab === "single" ? (
-                <form id="single-room-form" onSubmit={handleSingleSubmit}>
-                  {singleError && <div className="form-error">{singleError}</div>}
-                  <div className="form-row">
-                    <div className="field">
-                      <label>เลขห้อง</label>
-                      <input name="roomNumber" placeholder="เช่น 101" required />
-                    </div>
-                    <div className="field">
-                      <label>ชั้น</label>
-                      <input name="floor" placeholder="เช่น 1" />
-                    </div>
-                    <div className="field">
-                      <label>ประเภทห้อง</label>
-                      <select name="roomTypeId" required disabled={roomTypes.length === 0}>
-                        {roomTypes.length === 0 && <option value="">ยังไม่มีประเภทห้อง</option>}
-                        {roomTypes.map((rt) => (
-                          <option key={rt.id} value={rt.id}>
-                            {rt.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="field">
-                      <label>รูปแบบการเช่า</label>
-                      <select name="currentMode">
-                        <option value="monthly">รายเดือน</option>
-                        <option value="daily">รายวัน</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div className="form-row" style={{ marginTop: 12 }}>
-                    <div className="field">
-                      <label>ราคา/เดือน (บาท) — เว้นว่างถ้าใช้ราคาตามประเภทห้อง</label>
-                      <input name="priceMonthly" type="number" step="0.01" />
-                    </div>
-                    <div className="field">
-                      <label>ราคา/วัน (บาท)</label>
-                      <input name="priceDaily" type="number" step="0.01" />
-                    </div>
-                    <div className="field">
-                      <label>น้ำ-ไฟ</label>
-                      <select name="waterElectricMode">
-                        <option value="metered">มิเตอร์</option>
-                        <option value="flat_rate">เหมาจ่าย</option>
-                      </select>
-                    </div>
-                    <div className="field">
-                      <label>สถานะเริ่มต้น</label>
-                      <select name="status">
-                        <option value="available">ว่าง</option>
-                        <option value="unavailable">ไม่ว่าง</option>
-                        <option value="blocked">ปิดปรับปรุง</option>
-                      </select>
-                    </div>
-                  </div>
-                </form>
-              ) : (
-                <div>
-                  <div className="card" style={{ background: "var(--bg)", boxShadow: "none" }}>
-                    <h2 style={{ fontSize: 15 }}>✨ สร้างห้องอัตโนมัติ</h2>
-                    <p style={{ fontSize: 13, color: "var(--muted)", marginTop: -8 }}>
-                      กรอกช่วงชั้น เลขห้อง และราคา — ตารางด้านล่างจะแสดงห้องให้อัตโนมัติทันที
-                    </p>
-                    <div className="form-row">
-                      <div className="field">
-                        <label>ชั้นเริ่มต้น</label>
-                        <input
-                          type="number"
-                          value={startFloor}
-                          onChange={(e) => {
-                            setStartFloor(e.target.value);
-                            regenerateRows({ startFloor: e.target.value });
-                          }}
-                        />
-                      </div>
-                      <div className="field">
-                        <label>ชั้นสิ้นสุด</label>
-                        <input
-                          type="number"
-                          value={endFloor}
-                          onChange={(e) => {
-                            setEndFloor(e.target.value);
-                            regenerateRows({ endFloor: e.target.value });
-                          }}
-                        />
-                      </div>
-                      <div className="field">
-                        <label>เลขห้องเริ่มต้น</label>
-                        <input
-                          type="number"
-                          value={startNum}
-                          onChange={(e) => {
-                            setStartNum(e.target.value);
-                            regenerateRows({ startNum: e.target.value });
-                          }}
-                        />
-                      </div>
-                      <div className="field">
-                        <label>เลขห้องสิ้นสุด</label>
-                        <input
-                          type="number"
-                          value={endNum}
-                          onChange={(e) => {
-                            setEndNum(e.target.value);
-                            regenerateRows({ endNum: e.target.value });
-                          }}
-                        />
-                      </div>
-                    </div>
-                    <div className="form-row">
-                      <div className="field">
-                        <label>ราคารายเดือน (บาท)</label>
-                        <input
-                          type="number"
-                          value={monthlyPrice}
-                          onChange={(e) => {
-                            setMonthlyPrice(e.target.value);
-                            regenerateRows({ monthlyPrice: e.target.value });
-                          }}
-                        />
-                      </div>
-                      <div className="field">
-                        <label>ราคารายวัน (บาท)</label>
-                        <input
-                          type="number"
-                          value={dailyPrice}
-                          onChange={(e) => {
-                            setDailyPrice(e.target.value);
-                            regenerateRows({ dailyPrice: e.target.value });
-                          }}
-                        />
-                      </div>
-                      <div className="field" style={{ justifyContent: "flex-end" }}>
-                        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <input
-                            type="checkbox"
-                            checked={usePrefix}
-                            onChange={(e) => {
-                              setUsePrefix(e.target.checked);
-                              regenerateRows({ usePrefix: e.target.checked });
-                            }}
-                          />
-                          ใช้เลขชั้นนำหน้า (เช่น 101, 102, ...)
-                        </label>
-                      </div>
-                      <div className="field">
-                        <label>รูปแบบการเช่า</label>
-                        <select
-                          value={bulkMode}
-                          onChange={(e) => {
-                            setBulkMode(e.target.value);
-                            regenerateRows({ mode: e.target.value });
-                          }}
-                        >
-                          <option value="monthly">รายเดือน</option>
-                          <option value="daily">รายวัน</option>
-                        </select>
-                      </div>
-                    </div>
-                    <div className="bulk-preview-note">
-                      ตารางด้านล่างแสดง <strong>{bulkRows.length}</strong> ห้อง — แก้ไขรายห้องในตารางได้
-                    </div>
-                  </div>
-
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "16px 0 8px" }}>
-                    <strong>รายการห้องที่จะสร้าง ({bulkRows.length})</strong>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() =>
-                        setBulkRows((prev) => [
-                          ...prev,
-                          {
-                            key: makeKey(),
-                            roomNumber: "",
-                            floor: startFloor,
-                            mode: bulkMode,
-                            priceMonthly: monthlyPrice,
-                            priceDaily: dailyPrice,
-                            status: "available",
-                          },
-                        ])
-                      }
-                    >
-                      <PlusIcon size={14} />
-                      เพิ่มแถว
-                    </button>
-                  </div>
-
-                  <div className="bulk-table" style={{ maxHeight: 320, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 10 }}>
-                    {bulkFloorGroups.length === 0 ? (
-                      <p className="empty" style={{ padding: 16 }}>
-                        ยังไม่มีห้อง — ปรับช่วงชั้น/เลขห้องด้านบน หรือกด "เพิ่มแถว"
-                      </p>
-                    ) : (
-                      bulkFloorGroups.map(([floor, floorRows]) => (
-                        <div key={floor} style={{ borderBottom: "1px solid var(--border)" }}>
-                          <div
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              alignItems: "center",
-                              padding: "8px 12px",
-                              background: "var(--bg)",
-                              fontSize: 13,
-                              fontWeight: 700,
-                            }}
-                          >
-                            <span>
-                              <BuildingIcon size={14} /> ชั้น {floor} ({floorRows.length} ห้อง)
-                            </span>
-                            <button
-                              type="button"
-                              className="plain-icon-btn"
-                              onClick={() => removeFloorRows(floor)}
-                              title="ลบทั้งชั้น"
-                            >
-                              <TrashIcon size={15} />
-                            </button>
-                          </div>
-                          <table>
-                            <thead>
-                              <tr>
-                                <th>เลขห้อง</th>
-                                <th>ประเภท</th>
-                                <th>ราคา/เดือน</th>
-                                <th>ราคา/วัน</th>
-                                <th>สถานะ</th>
-                                <th></th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {floorRows.map((row) => (
-                                <tr key={row.key}>
-                                  <td>
-                                    <input
-                                      value={row.roomNumber}
-                                      onChange={(e) => updateRow(row.key, "roomNumber", e.target.value)}
-                                    />
-                                  </td>
-                                  <td>
-                                    <select
-                                      value={row.mode}
-                                      onChange={(e) => updateRow(row.key, "mode", e.target.value)}
-                                    >
-                                      <option value="monthly">รายเดือน</option>
-                                      <option value="daily">รายวัน</option>
-                                    </select>
-                                  </td>
-                                  <td>
-                                    <input
-                                      type="number"
-                                      value={row.priceMonthly}
-                                      onChange={(e) => updateRow(row.key, "priceMonthly", e.target.value)}
-                                    />
-                                  </td>
-                                  <td>
-                                    <input
-                                      type="number"
-                                      value={row.priceDaily}
-                                      onChange={(e) => updateRow(row.key, "priceDaily", e.target.value)}
-                                    />
-                                  </td>
-                                  <td>
-                                    <select
-                                      value={row.status}
-                                      onChange={(e) => updateRow(row.key, "status", e.target.value)}
-                                    >
-                                      <option value="available">ว่าง</option>
-                                      <option value="unavailable">ไม่ว่าง</option>
-                                      <option value="blocked">ปิดปรับปรุง</option>
-                                    </select>
-                                  </td>
-                                  <td>
-                                    <button
-                                      type="button"
-                                      className="plain-icon-btn"
-                                      onClick={() => removeRow(row.key)}
-                                    >
-                                      <TrashIcon size={15} />
-                                    </button>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="modal-footer">
-              <span style={{ color: "var(--muted)", fontSize: 14 }}>
-                {addTab === "bulk" ? `ทั้งหมด ${bulkRows.length} ห้อง` : ""}
-              </span>
-              <div style={{ display: "flex", gap: 10 }}>
-                <button type="button" className="secondary" onClick={() => setShowAddModal(false)}>
-                  ยกเลิก
-                </button>
-                {addTab === "single" ? (
-                  <button type="submit" form="single-room-form">
-                    เพิ่มห้องพัก
-                  </button>
-                ) : (
-                  <button type="button" onClick={handleBulkSubmit} disabled={bulkRows.length === 0}>
-                    สร้างทั้งหมด ({bulkRows.length} ห้อง)
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ---------- Room type modal ---------- */}
-      {showTypeModal && (
-        <div className="modal-overlay" onClick={() => setShowTypeModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>ประเภทห้อง</h2>
-              <button type="button" className="modal-close" onClick={() => setShowTypeModal(false)}>
-                <XIcon size={18} />
-              </button>
-            </div>
-            <div className="modal-body">
-              {roomTypes.length === 0 ? (
-                <p className="empty">ยังไม่มีประเภทห้อง</p>
-              ) : (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>ชื่อ</th>
-                      <th>ราคา/วัน</th>
-                      <th>ราคา/เดือน</th>
-                      <th>มัดจำ</th>
-                      <th>คนสูงสุด</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {roomTypes.map((rt) => (
-                      <tr key={rt.id}>
-                        <td>{rt.name}</td>
-                        <td>{rt.priceDaily ?? "-"}</td>
-                        <td>{rt.priceMonthly ?? "-"}</td>
-                        <td>{rt.priceDeposit ?? "-"}</td>
-                        <td>{rt.maxOccupancy ?? "-"}</td>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    {multiSelect && <th></th>}
+                    <th>ห้อง</th>
+                    <th>ชั้น</th>
+                    <th>รองรับ</th>
+                    <th>สถานะ</th>
+                    <th>ผู้เช่า</th>
+                    <th>ราคา/เดือน</th>
+                    <th>ราคา/วัน</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {floorRooms.map((room) => {
+                    const occ = room.occupancies.find((o) => o.status === "active");
+                    return (
+                      <tr key={room.id} style={{ cursor: "pointer" }} onClick={() => (multiSelect ? toggleSelect(room.id) : setDetailRoom(room))}>
+                        {multiSelect && (
+                          <td>
+                            <input type="checkbox" checked={selected.has(room.id)} onChange={() => toggleSelect(room.id)} onClick={(e) => e.stopPropagation()} />
+                          </td>
+                        )}
+                        <td>{room.roomNumber}</td>
+                        <td>{room.floor}</td>
+                        <td>{rentalTypeLabel(room.rentalTypeSupport)}</td>
+                        <td>
+                          <span className={`badge ${ROOM_STATUS_BADGE_CLASS[room.status]}`}>{ROOM_STATUS_LABEL[room.status]}</span>
+                        </td>
+                        <td>{occ?.tenant.name ?? "-"}</td>
+                        <td>{room.monthlyPrice ?? "-"}</td>
+                        <td>{room.dailyPrice ?? "-"}</td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-
-              <form
-                action={createRoomType}
-                className="form-row"
-                style={{ marginTop: 16 }}
-                onSubmit={() => setTimeout(() => showToast("เพิ่มประเภทห้องสำเร็จ"), 100)}
-              >
-                <div className="field">
-                  <label>ชื่อประเภทห้อง</label>
-                  <input name="name" placeholder="เช่น เตียงเดี่ยว" required />
-                </div>
-                <div className="field">
-                  <label>ราคา/วัน (บาท)</label>
-                  <input name="priceDaily" type="number" step="0.01" />
-                </div>
-                <div className="field">
-                  <label>ราคา/เดือน (บาท)</label>
-                  <input name="priceMonthly" type="number" step="0.01" />
-                </div>
-                <div className="field">
-                  <label>เงินมัดจำ (บาท)</label>
-                  <input name="priceDeposit" type="number" step="0.01" />
-                </div>
-                <div className="field">
-                  <label>จำนวนคนสูงสุด</label>
-                  <input name="maxOccupancy" type="number" />
-                </div>
-                <button type="submit">เพิ่มประเภทห้อง</button>
-              </form>
-            </div>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
           </div>
+        );
+      })}
+
+      {showAdd && <RoomFormModal room={null} settings={settings} onClose={() => setShowAdd(false)} onSaved={notify} />}
+      {editingRoom && (
+        <RoomFormModal
+          room={editingRoom}
+          settings={settings}
+          onClose={() => setEditingRoom(null)}
+          onSaved={notify}
+        />
+      )}
+      {showBulkCreate && <BulkCreateModal onClose={() => setShowBulkCreate(false)} onSaved={notify} />}
+      {showBulkEdit && <BulkEditModal rooms={selectedRooms} onClose={() => setShowBulkEdit(false)} onSaved={() => { notify("บันทึกแล้ว"); exitMultiSelect(); }} />}
+      {detailRoom && (
+        <RoomDetailModal
+          room={rooms.find((r) => r.id === detailRoom.id) ?? detailRoom}
+          tenants={tenants}
+          initialTab={detailInitialTab}
+          onClose={() => setDetailRoom(null)}
+          onChanged={notify}
+          onEdit={() => {
+            setEditingRoom(detailRoom);
+            setDetailRoom(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function RoomCard({
+  room,
+  multiSelect,
+  selected,
+  onToggleSelect,
+  onOpen,
+}: {
+  room: RoomWithRelations;
+  multiSelect: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
+  onOpen: () => void;
+}) {
+  const occ = room.occupancies.find((o) => o.status === "active");
+  const booking = room.bookings.find((b) => b.status === "pending" || b.status === "confirmed");
+  const contract = room.contracts[0];
+  const cover = room.images.find((i) => i.id === room.coverImageId) ?? room.images[0];
+
+  const expiryWarning =
+    contract?.endDate && !contract.noEndDate
+      ? (new Date(contract.endDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24) <= 60
+      : false;
+
+  return (
+    <div className={`room-card${selected ? " selected" : ""}`} onClick={() => (multiSelect ? onToggleSelect() : onOpen())} style={{ cursor: "pointer" }}>
+      {multiSelect && (
+        <input type="checkbox" className="room-card-checkbox" checked={selected} onChange={onToggleSelect} onClick={(e) => e.stopPropagation()} />
+      )}
+      {cover && <img src={cover.url} alt="" style={{ width: "100%", height: 100, objectFit: "cover", borderRadius: 10 }} />}
+      <div className="room-card-top">
+        <div>
+          <div className="room-card-number">{room.roomNumber}</div>
+          <div className="room-card-floor">ชั้น {room.floor}</div>
+        </div>
+        <span className={`status-dot ${room.status}`} title={ROOM_STATUS_LABEL[room.status]} />
+      </div>
+
+      <span className={`badge ${ROOM_STATUS_BADGE_CLASS[room.status]}`}>
+        {ROOM_STATUS_LABEL[room.status]}
+        {room.status === "occupied" && occ && ` (${occ.tenant.tenantType === "monthly" ? "รายเดือน" : "รายวัน"})`}
+      </span>
+      <span className="price-tag">{rentalTypeLabel(room.rentalTypeSupport)}</span>
+
+      <div className="room-card-prices">
+        {room.monthlyPrice && (
+          <div className="room-card-price-row">
+            <span>รายเดือน</span> <span>฿{room.monthlyPrice.toLocaleString()}</span>
+          </div>
+        )}
+        {room.dailyPrice && (
+          <div className="room-card-price-row">
+            <span>รายวัน</span> <span>฿{room.dailyPrice.toLocaleString()}</span>
+          </div>
+        )}
+      </div>
+
+      {occ && (
+        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+          <PersonIcon size={14} /> {occ.tenant.name} · เข้าพัก {fmtDate(occ.checkinDate)}
+          {expiryWarning && <div style={{ color: "var(--warning)" }}>⚠ ใกล้หมดสัญญา {fmtDate(contract?.endDate)}</div>}
         </div>
       )}
-
-      {toast && <div className="toast">{toast}</div>}
+      {!occ && booking && (
+        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+          {booking.tenant?.name ?? "-"} · เข้าพัก {fmtDate(booking.checkinDate)}
+        </div>
+      )}
+      {!occ && !booking && room.status === "available" && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen();
+          }}
+        >
+          Check-in
+        </button>
+      )}
     </div>
   );
 }

@@ -1,29 +1,23 @@
 import "./globals.css";
 import type { ReactElement, ReactNode } from "react";
-import { getCurrentUser, hasModuleAccess } from "@/lib/auth";
-import { logout } from "./users/actions";
+import { getCurrentBuilding, getCurrentUser, hasModuleAccess } from "@/lib/auth";
+import { logout } from "./session-actions";
 import SidebarNav from "./SidebarNav";
 import {
   BuildingIcon,
   CalendarIcon,
-  ClipboardCheckIcon,
-  DashboardIcon,
   DoorIcon,
   GaugeIcon,
   LogoutIcon,
   PersonIcon,
-  ReportIcon,
-  SparklesIcon,
-  TrendDownIcon,
-  TrendUpIcon,
-  UsersIcon,
+  SettingsIcon,
   WalletIcon,
   WrenchIcon,
 } from "./icons";
 
 export const metadata = {
   title: "ระบบจัดการหอพัก",
-  description: "Dormitory Management System — Prototype",
+  description: "Dormitory Management System",
 };
 
 type NavLink = { href: string; label: string; module: string; icon: ReactElement };
@@ -37,50 +31,43 @@ type NavGroup = {
 type NavEntry = ({ kind: "link" } & NavLink) | ({ kind: "group" } & NavGroup);
 
 const navEntries: NavEntry[] = [
-  { kind: "link", href: "/dashboard", label: "Dashboard", module: "OWNER_ONLY", icon: <DashboardIcon /> },
   {
     kind: "group",
     label: "ห้องพัก",
     icon: <BuildingIcon />,
     items: [
-      { href: "/rooms", label: "ห้องพัก", module: "A", icon: <DoorIcon /> },
-      { href: "/bookings", label: "จองห้องพัก", module: "A", icon: <CalendarIcon /> },
-      { href: "/meters", label: "มิเตอร์น้ำ-ไฟ", module: "C", icon: <GaugeIcon /> },
+      { href: "/rooms", label: "ห้องพัก", module: "room", icon: <DoorIcon /> },
+      { href: "/bookings", label: "จองห้องพัก", module: "room", icon: <CalendarIcon /> },
+      { href: "/meters", label: "มิเตอร์น้ำ-ไฟ", module: "room", icon: <GaugeIcon /> },
     ],
   },
-  { kind: "link", href: "/customers", label: "ผู้เช่า", module: "F", icon: <PersonIcon /> },
   {
     kind: "group",
-    label: "การเงิน",
-    icon: <WalletIcon />,
+    label: "ผู้เช่า",
+    icon: <PersonIcon />,
     items: [
-      { href: "/bills", label: "รายได้", module: "B", icon: <TrendUpIcon /> },
-      { href: "/expenses", label: "รายจ่าย", module: "L", icon: <TrendDownIcon /> },
+      { href: "/tenants", label: "รายชื่อผู้เช่า", module: "tenant", icon: <PersonIcon /> },
+      { href: "/contracts", label: "เอกสารสัญญา", module: "tenant", icon: <CalendarIcon /> },
     ],
   },
+  { kind: "link", href: "/bills", label: "การเงิน", module: "finance", icon: <WalletIcon /> },
+  { kind: "link", href: "/repairs", label: "แจ้งซ่อม", module: "maintenance", icon: <WrenchIcon /> },
   {
-    kind: "link",
-    href: "/cross-check",
-    label: "เช็คยอดประจำวัน",
-    module: "M",
-    icon: <ClipboardCheckIcon />,
+    kind: "group",
+    label: "ตั้งค่า",
+    icon: <SettingsIcon />,
+    items: [
+      { href: "/settings/users", label: "ผู้ใช้งาน/สิทธิ์", module: "setting", icon: <PersonIcon /> },
+      { href: "/settings/building", label: "ค่าตั้งอาคาร", module: "setting", icon: <BuildingIcon /> },
+      { href: "/settings/payee", label: "ข้อมูลผู้รับเงิน", module: "setting", icon: <WalletIcon /> },
+      { href: "/settings/contract-clauses", label: "ข้อสัญญา", module: "setting", icon: <CalendarIcon /> },
+      { href: "/settings/accounts", label: "บัญชีธนาคาร/เงินสด", module: "setting", icon: <WalletIcon /> },
+    ],
   },
-  { kind: "link", href: "/maintenance", label: "แจ้งซ่อม", module: "G", icon: <WrenchIcon /> },
-  {
-    kind: "link",
-    href: "/housekeeping",
-    label: "แจ้งทำความสะอาด",
-    module: "H",
-    icon: <SparklesIcon />,
-  },
-  { kind: "link", href: "/reports", label: "รายงาน", module: "D", icon: <ReportIcon /> },
-  { kind: "link", href: "/users", label: "ผู้ใช้งาน", module: "USERS", icon: <UsersIcon /> },
 ];
 
 function canSee(user: any, moduleCode: string) {
   if (!user) return false;
-  if (moduleCode === "OWNER_ONLY") return user.role === "owner";
-  if (moduleCode === "USERS") return user.role === "owner" || user.canManageUsers;
   return hasModuleAccess(user, moduleCode);
 }
 
@@ -101,6 +88,8 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         .filter((entry): entry is NavEntry => entry !== null)
     : [];
 
+  const currentBuilding = user ? await getCurrentBuilding(user) : null;
+
   return (
     <html lang="th">
       <head>
@@ -118,10 +107,16 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
               <BuildingIcon size={22} />
               <span>ระบบจัดการหอพัก</span>
             </h1>
+            {user && currentBuilding && (
+              <a href="/select-building" className="building-switcher" title="สลับอาคาร">
+                <BuildingIcon size={16} />
+                <span>{currentBuilding.name}</span>
+              </a>
+            )}
             {user && <SidebarNav entries={visibleEntries} />}
             {user && (
-              <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.2)" }}>
-                <div style={{ color: "#dbe4f7", fontSize: 13, marginBottom: 8 }}>
+              <div className="sidebar-foot">
+                <div style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 8 }}>
                   {user.name} ({user.role === "owner" ? "เจ้าของ" : "พนักงาน"})
                 </div>
                 <form action={logout}>

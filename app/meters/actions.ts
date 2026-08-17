@@ -1,186 +1,150 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { requireAccess } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
-import { getDefaultBranch } from "../rooms/actions";
 
-async function getPreviousReading(roomId: number, meterType: string, beforeMonth: string) {
-  const prev = await prisma.meterReading.findFirst({
-    where: { roomId, meterType, status: "confirmed", billingMonth: { lt: beforeMonth } },
-    orderBy: { billingMonth: "desc" },
-  });
-  return prev?.currentReading ?? 0;
+function currentMonthKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-async function getPreviousUnitUsed(roomId: number, meterType: string, beforeMonth: string) {
-  const prev = await prisma.meterReading.findFirst({
-    where: { roomId, meterType, status: "confirmed", billingMonth: { lt: beforeMonth } },
-    orderBy: { billingMonth: "desc" },
+async function checkAnomalies(roomId: number, waterUnits: number, electricUnits: number, waterCurrent: number, waterPrev: number, electricCurrent: number, electricPrev: number) {
+  const warnings: string[] = [];
+  if (waterCurrent < waterPrev) warnings.push("ค่ามิเตอร์น้ำน้อยกว่าครั้งก่อน (ผิดปกติ)");
+  if (electricCurrent < electricPrev) warnings.push("ค่ามิเตอร์ไฟน้อยกว่าครั้งก่อน (ผิดปกติ)");
+
+  const history = await prisma.meterReading.findMany({
+    where: { roomId },
+    orderBy: { recordedAt: "desc" },
+    take: 4,
   });
-  return prev?.unitUsed ?? null;
-}
-
-export async function submitMeterBatch(formData: FormData) {
-  const branch = await getDefaultBranch();
-  const billingMonth = String(formData.get("billingMonth") || "");
-  const waterRate = Number(formData.get("waterRate") || 0);
-  const electricRate = Number(formData.get("electricRate") || 0);
-  if (!billingMonth) return;
-
-  const rooms = await prisma.room.findMany({
-    where: { branchId: branch.id, waterElectricMode: "metered", active: true },
-  });
-
-  for (const room of rooms) {
-    for (const meterType of ["water", "electric"] as const) {
-      const raw = formData.get(`${meterType}_${room.id}`);
-      if (raw === null || String(raw).trim() === "") continue;
-      const currentReading = Number(raw);
-      const rate = meterType === "water" ? waterRate : electricRate;
-      const previousReading = await getPreviousReading(room.id, meterType, billingMonth);
-      const unitUsed = currentReading - previousReading;
-      const amount = Math.max(0, unitUsed) * rate;
-      const previousUnitUsed = await getPreviousUnitUsed(room.id, meterType, billingMonth);
-      const flaggedAbnormal =
-        unitUsed < 0 || (previousUnitUsed !== null && previousUnitUsed > 0 && unitUsed > previousUnitUsed * 2);
-
-      await prisma.meterReading.upsert({
-        where: {
-          roomId_meterType_billingMonth: { roomId: room.id, meterType, billingMonth },
-        },
-        create: {
-          roomId: room.id,
-          meterType,
-          billingMonth,
-          previousReading,
-          currentReading,
-          unitUsed,
-          ratePerUnit: rate,
-          amount,
-          flaggedAbnormal,
-          status: "draft",
-        },
-        update: {
-          currentReading,
-          unitUsed,
-          ratePerUnit: rate,
-          amount,
-          flaggedAbnormal,
-          status: "draft",
-        },
-      });
+  if (history.length >= 2) {
+    const avgWater = history.reduce((s, h) => s + h.waterUnits, 0) / history.length;
+    const avgElectric = history.reduce((s, h) => s + h.electricUnits, 0) / history.length;
+    if (avgWater > 0 && Math.abs(waterUnits - avgWater) / avgWater > 0.5) {
+      warnings.push(`หน่วยน้ำที่ใช้ (${waterUnits.toFixed(1)}) ต่างจากค่าเฉลี่ยเดิม (${avgWater.toFixed(1)}) มาก`);
+    }
+    if (avgElectric > 0 && Math.abs(electricUnits - avgElectric) / avgElectric > 0.5) {
+      warnings.push(`หน่วยไฟที่ใช้ (${electricUnits.toFixed(1)}) ต่างจากค่าเฉลี่ยเดิม (${avgElectric.toFixed(1)}) มาก`);
     }
   }
-
-  redirect(`/meters?month=${billingMonth}`);
+  return warnings;
 }
 
-export async function updateDraftReading(formData: FormData) {
-  const id = Number(formData.get("readingId"));
-  const currentReading = Number(formData.get("currentReading"));
-  const reading = await prisma.meterReading.findUnique({ where: { id } });
-  if (!reading) return;
+export async function recordMeterReading(formData: FormData) {
+  const { user, building } = await requireAccess("room");
+  const roomId = Number(formData.get("roomId"));
+  const room = await prisma.room.findFirst({ where: { id: roomId, buildingId: building.id } });
+  if (!room) return { error: "ไม่พบห้อง" };
 
-  const unitUsed = currentReading - reading.previousReading;
-  const amount = Math.max(0, unitUsed) * reading.ratePerUnit;
+  const waterCurrent = Number(formData.get("waterCurrent") || 0);
+  const electricCurrent = Number(formData.get("electricCurrent") || 0);
+
+  const last = await prisma.meterReading.findFirst({ where: { roomId }, orderBy: { recordedAt: "desc" } });
+  const waterPrev = last?.waterCurrent ?? 0;
+  const electricPrev = last?.electricCurrent ?? 0;
+  const waterUnits = waterCurrent - waterPrev;
+  const electricUnits = electricCurrent - electricPrev;
+
+  if (formData.get("confirmAnyway") !== "on") {
+    const warnings = await checkAnomalies(roomId, waterUnits, electricUnits, waterCurrent, waterPrev, electricCurrent, electricPrev);
+    if (warnings.length > 0) return { warning: warnings.join(" / ") };
+  }
+
+  await prisma.meterReading.create({
+    data: {
+      roomId,
+      buildingId: building.id,
+      readingMonth: currentMonthKey(),
+      waterPrev,
+      waterCurrent,
+      waterUnits,
+      electricPrev,
+      electricCurrent,
+      electricUnits,
+      recordedBy: user.id,
+    },
+  });
+
+  revalidatePath("/meters");
+  revalidatePath("/rooms");
+}
+
+export async function updateMeterReading(formData: FormData) {
+  const { building } = await requireAccess("room");
+  const id = Number(formData.get("readingId"));
+  const reading = await prisma.meterReading.findFirst({ where: { id, buildingId: building.id } });
+  if (!reading) return { error: "ไม่พบข้อมูล" };
+  if (reading.billingStatus === "billed") return { error: "แก้ไขไม่ได้ — ออกบิลไปแล้ว" };
+
+  const waterCurrent = Number(formData.get("waterCurrent") || 0);
+  const electricCurrent = Number(formData.get("electricCurrent") || 0);
 
   await prisma.meterReading.update({
     where: { id },
-    data: { currentReading, unitUsed, amount, flaggedAbnormal: unitUsed < 0 },
+    data: {
+      waterCurrent,
+      waterUnits: waterCurrent - reading.waterPrev,
+      electricCurrent,
+      electricUnits: electricCurrent - reading.electricPrev,
+    },
   });
 
   revalidatePath("/meters");
 }
 
-export async function confirmAndIssueBills(billingMonth: string) {
-  const branch = await getDefaultBranch();
+type ImportRow = { roomNumber: string; waterCurrent: string; electricCurrent: string };
 
-  await prisma.meterReading.updateMany({
-    where: { billingMonth, status: "draft" },
-    data: { status: "confirmed" },
-  });
+function parseCsv(text: string): ImportRow[] {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const rows: ImportRow[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",").map((c) => c.trim());
+    rows.push({ roomNumber: cols[0] || "", waterCurrent: cols[2] || "", electricCurrent: cols[4] || "" });
+  }
+  return rows;
+}
 
-  const readings = await prisma.meterReading.findMany({
-    where: { billingMonth, status: "confirmed" },
-    include: { room: true },
-  });
+export async function importMetersCsv(formData: FormData) {
+  const { user, building } = await requireAccess("room");
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) return { error: "กรุณาเลือกไฟล์" };
 
-  const roomIds = Array.from(new Set(readings.map((r) => r.roomId)));
+  const rows = parseCsv(await file.text());
+  const skipped: string[] = [];
+  let imported = 0;
 
-  for (const roomId of roomIds) {
-    const contract = await prisma.contract.findFirst({
-      where: { roomId, status: "active" },
-    });
-    if (!contract) continue;
+  for (const row of rows) {
+    if (!row.roomNumber || (!row.waterCurrent && !row.electricCurrent)) continue;
+    const room = await prisma.room.findFirst({ where: { buildingId: building.id, roomNumber: row.roomNumber } });
+    if (!room) {
+      skipped.push(`ห้อง "${row.roomNumber}" ไม่พบในระบบ`);
+      continue;
+    }
+    const last = await prisma.meterReading.findFirst({ where: { roomId: room.id }, orderBy: { recordedAt: "desc" } });
+    const waterPrev = last?.waterCurrent ?? 0;
+    const electricPrev = last?.electricCurrent ?? 0;
+    const waterCurrent = row.waterCurrent ? Number(row.waterCurrent) : waterPrev;
+    const electricCurrent = row.electricCurrent ? Number(row.electricCurrent) : electricPrev;
 
-    const periodStart = new Date(`${billingMonth}-01T00:00:00`);
-    const periodEnd = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0);
-
-    const existing = await prisma.bill.findFirst({
-      where: { contractId: contract.id, billingPeriodStart: periodStart, billType: "monthly" },
-    });
-    if (existing) continue;
-
-    const waterReading = readings.find((r) => r.roomId === roomId && r.meterType === "water");
-    const electricReading = readings.find((r) => r.roomId === roomId && r.meterType === "electric");
-    const waterCharge = waterReading?.amount ?? 0;
-    const electricCharge = electricReading?.amount ?? 0;
-    const roomCharge = contract.monthlyRate;
-    const totalAmount = roomCharge + waterCharge + electricCharge;
-    const dueDate = new Date(periodEnd);
-    dueDate.setDate(dueDate.getDate() + 5);
-
-    await prisma.bill.create({
+    await prisma.meterReading.create({
       data: {
-        branchId: branch.id,
-        billType: "monthly",
-        contractId: contract.id,
-        customerId: contract.customerId,
-        roomId,
-        billingPeriodStart: periodStart,
-        billingPeriodEnd: periodEnd,
-        roomCharge,
-        waterCharge,
-        electricCharge,
-        totalAmount,
-        dueDate,
-        status: "issued",
+        roomId: room.id,
+        buildingId: building.id,
+        readingMonth: currentMonthKey(),
+        waterPrev,
+        waterCurrent,
+        waterUnits: waterCurrent - waterPrev,
+        electricPrev,
+        electricCurrent,
+        electricUnits: electricCurrent - electricPrev,
+        recordedBy: user.id,
       },
     });
+    imported++;
   }
 
   revalidatePath("/meters");
-  revalidatePath("/bills");
-}
-
-export async function revertBatch(billingMonth: string) {
-  const bills = await prisma.bill.findMany({
-    where: {
-      billType: "monthly",
-      billingPeriodStart: new Date(`${billingMonth}-01T00:00:00`),
-    },
-    include: { payments: true },
-  });
-
-  const blockedRoomIds: number[] = [];
-  for (const bill of bills) {
-    if (bill.payments.length > 0) {
-      blockedRoomIds.push(bill.roomId);
-    } else {
-      await prisma.bill.delete({ where: { id: bill.id } });
-    }
-  }
-
-  await prisma.meterReading.updateMany({
-    where: {
-      billingMonth,
-      status: "confirmed",
-      roomId: { notIn: blockedRoomIds },
-    },
-    data: { status: "editable" },
-  });
-
-  revalidatePath("/meters");
-  revalidatePath("/bills");
+  return { success: true, imported, skipped };
 }

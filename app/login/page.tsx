@@ -30,6 +30,10 @@ export default async function LoginPage({
               <label>รหัสผ่าน (อย่างน้อย 4 ตัวอักษร)</label>
               <input name="password" type="password" required minLength={4} />
             </div>
+            <div className="field">
+              <label>ชื่ออาคาร/สาขาแรก</label>
+              <input name="buildingName" required />
+            </div>
             <button type="submit">สร้างบัญชีและเข้าสู่ระบบ</button>
           </form>
         </div>
