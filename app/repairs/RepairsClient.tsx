@@ -12,8 +12,10 @@ import { WrenchIcon, PlusIcon, SettingsIcon, SparklesIcon } from "../icons";
 const STATUS_LABEL: Record<string, string> = { pending: "รอดำเนินการ", in_progress: "กำลังดำเนินการ", completed: "เสร็จสิ้น" };
 const PRIORITY_LABEL: Record<string, string> = { low: "ต่ำ", medium: "ปานกลาง", high: "สูง", urgent: "เร่งด่วน" };
 
+import { formatDateBE } from "@/lib/date-utils";
+
 function fmtDate(d: Date | string) {
-  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" });
+  return formatDateBE(d);
 }
 
 export default function RepairsClient({

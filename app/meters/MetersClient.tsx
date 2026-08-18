@@ -2,8 +2,9 @@
 
 import { useMemo, useState, useTransition } from "react";
 import type { Room, RoomOccupancy, Tenant, MeterReading } from "@prisma/client";
-import { recordMeterReading, updateMeterReading, importMetersCsv } from "./actions";
+import { updateMeterReading, importMetersCsv, bulkRecordMeterReadings } from "./actions";
 import { GaugeIcon, XIcon } from "../icons";
+import MonthNav from "../MonthNav";
 
 type RoomWithOcc = Room & { occupancies: (RoomOccupancy & { tenant: Tenant })[] };
 
@@ -12,50 +13,111 @@ function currentMonthKey() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+import { formatDateTimeBE } from "@/lib/date-utils";
+
 function fmtDateTime(d: Date | string) {
-  return new Date(d).toLocaleString("th-TH", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return formatDateTimeBE(d);
 }
 
+type EditCell = { water: string; electric: string };
+
 export default function MetersClient({ rooms, readings, buildingName }: { rooms: RoomWithOcc[]; readings: MeterReading[]; buildingName: string }) {
-  const [entryRoom, setEntryRoom] = useState<RoomWithOcc | null>(null);
   const [historyRoom, setHistoryRoom] = useState<RoomWithOcc | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [edits, setEdits] = useState<Record<number, EditCell>>({});
+  const [saving, startSaving] = useTransition();
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
+  const [month, setMonth] = useState(currentMonthKey());
 
   function notify(msg: string) {
     setToast(msg);
     setTimeout(() => setToast(null), 3500);
   }
 
+  function changeMonth(next: string) {
+    setMonth(next);
+    setEdits({});
+    setSaveError(null);
+    setSaveWarnings([]);
+  }
+
+  function setEdit(roomId: number, field: "water" | "electric", value: string) {
+    setEdits((prev) => ({ ...prev, [roomId]: { ...prev[roomId], [field]: value } }));
+  }
+
+  // เรียงตาม readingMonth ใหม่→เก่าต่อห้อง (ไม่ใช่ recordedAt เพราะอาจกรอกย้อนหลังไม่เรียงตามเวลาจริง) — ใช้หาทั้ง "เดือนที่เลือก" และ "เดือนก่อนหน้าล่าสุด"
   const readingsByRoom = useMemo(() => {
     const map = new Map<number, MeterReading[]>();
     for (const r of readings) {
       if (!map.has(r.roomId)) map.set(r.roomId, []);
       map.get(r.roomId)!.push(r);
     }
+    for (const list of map.values()) list.sort((a, b) => (a.readingMonth < b.readingMonth ? 1 : -1));
     return map;
   }, [readings]);
 
-  const month = currentMonthKey();
+  function readingForMonth(roomId: number) {
+    return readingsByRoom.get(roomId)?.find((r) => r.readingMonth === month) ?? null;
+  }
+  function prevReading(roomId: number) {
+    return readingsByRoom.get(roomId)?.find((r) => r.readingMonth < month) ?? null;
+  }
+
   const stats = useMemo(() => {
     let waterSum = 0;
     let electricSum = 0;
     let recorded = 0;
     for (const room of rooms) {
-      const latest = readingsByRoom.get(room.id)?.[0];
-      if (latest && latest.readingMonth === month) {
-        waterSum += latest.waterUnits;
-        electricSum += latest.electricUnits;
+      const current = readingForMonth(room.id);
+      if (current) {
+        waterSum += current.waterUnits;
+        electricSum += current.electricUnits;
         recorded++;
       }
     }
     return { waterSum, electricSum, recorded, total: rooms.length };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rooms, readingsByRoom, month]);
+
+  const editedCount = Object.values(edits).filter((e) => e.water?.trim() || e.electric?.trim()).length;
+
+  function handleBulkSave() {
+    setSaveError(null);
+    setSaveWarnings([]);
+    const rows = Object.entries(edits)
+      .map(([roomId, v]) => ({
+        roomId: Number(roomId),
+        waterCurrent: v.water?.trim() ? Number(v.water) : null,
+        electricCurrent: v.electric?.trim() ? Number(v.electric) : null,
+      }))
+      .filter((r) => r.waterCurrent != null || r.electricCurrent != null);
+
+    if (rows.length === 0) {
+      setSaveError("กรุณากรอกเลขมิเตอร์อย่างน้อย 1 ห้องก่อนบันทึก");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.set("rowsJson", JSON.stringify(rows));
+    formData.set("month", month);
+    startSaving(async () => {
+      const result = await bulkRecordMeterReadings(formData);
+      if (result?.error) {
+        setSaveError(result.error);
+      } else {
+        setEdits({});
+        setSaveWarnings(result.warnings ?? []);
+        notify(`บันทึกมิเตอร์แล้ว ${result.saved} ห้อง`);
+      }
+    });
+  }
 
   function exportCsv() {
     const header = "หมายเลขห้อง,ผู้เช่า,มิเตอร์น้ำครั้งล่าสุด,มิเตอร์น้ำปัจจุบัน,มิเตอร์ไฟครั้งล่าสุด,มิเตอร์ไฟปัจจุบัน";
     const lines = rooms.map((room) => {
-      const latest = readingsByRoom.get(room.id)?.[0];
+      const latest = readingForMonth(room.id) ?? prevReading(room.id);
       const tenant = room.occupancies[0]?.tenant.name ?? "";
       return `${room.roomNumber},${tenant},${latest?.waterCurrent ?? 0},,${latest?.electricCurrent ?? 0},`;
     });
@@ -76,7 +138,7 @@ export default function MetersClient({ rooms, readings, buildingName }: { rooms:
           <div className="page-header-title">
             <GaugeIcon size={24} /> มิเตอร์น้ำ-ไฟ
           </div>
-          <p className="page-header-subtitle">บันทึกเลขมิเตอร์ของ {buildingName} — เดือน {month}</p>
+          <p className="page-header-subtitle">กรอกเลขมิเตอร์ของ {buildingName} (กรอกในตารางแล้วกดบันทึกทั้งหมดทีเดียว)</p>
         </div>
         <div className="page-header-actions">
           <button className="secondary" onClick={exportCsv}>
@@ -85,18 +147,41 @@ export default function MetersClient({ rooms, readings, buildingName }: { rooms:
           <button className="secondary" onClick={() => setShowImport(true)}>
             Import
           </button>
+          <button onClick={handleBulkSave} disabled={saving || editedCount === 0}>
+            {saving ? "กำลังบันทึก..." : `บันทึกทั้งหมด${editedCount > 0 ? ` (${editedCount})` : ""}`}
+          </button>
         </div>
       </div>
 
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <MonthNav month={month} onChange={changeMonth} />
+        {month !== currentMonthKey() && (
+          <button type="button" className="secondary" onClick={() => changeMonth(currentMonthKey())}>
+            กลับเดือนนี้
+          </button>
+        )}
+      </div>
+
       {toast && <div className="toast">{toast}</div>}
+      {saveError && <div className="form-error">{saveError}</div>}
+      {saveWarnings.length > 0 && (
+        <div className="form-error" style={{ background: "var(--warning-soft)", color: "var(--warning)" }}>
+          <strong>บันทึกสำเร็จ แต่มีรายการที่ควรตรวจสอบ:</strong>
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {saveWarnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="stat-grid">
         <div className="stat-card">
-          <div className="label">รวมหน่วยน้ำ (เดือนนี้)</div>
+          <div className="label">รวมหน่วยน้ำ (เดือน {month})</div>
           <div className="value">{stats.waterSum.toFixed(1)}</div>
         </div>
         <div className="stat-card">
-          <div className="label">รวมหน่วยไฟ (เดือนนี้)</div>
+          <div className="label">รวมหน่วยไฟ (เดือน {month})</div>
           <div className="value">{stats.electricSum.toFixed(1)}</div>
         </div>
         <div className="stat-card">
@@ -107,150 +192,128 @@ export default function MetersClient({ rooms, readings, buildingName }: { rooms:
         </div>
       </div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>ห้อง</th>
-            <th>ผู้เช่า</th>
-            <th>น้ำ (ก่อน→ใหม่)</th>
-            <th>ไฟ (ก่อน→ใหม่)</th>
-            <th>จัดการ</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rooms.map((room) => {
-            const latest = readingsByRoom.get(room.id)?.[0];
-            const recordedThisMonth = latest?.readingMonth === month;
-            return (
-              <tr key={room.id}>
-                <td>{room.roomNumber}</td>
-                <td>{room.occupancies[0]?.tenant.name ?? "-"}</td>
-                <td>
-                  {latest ? `${latest.waterPrev} → ${latest.waterCurrent}` : "-"}
-                </td>
-                <td>{latest ? `${latest.electricPrev} → ${latest.electricCurrent}` : "-"}</td>
-                <td>
-                  <div className="status-buttons">
-                    {recordedThisMonth ? (
-                      <span className="badge success">บันทึกแล้ว</span>
-                    ) : (
-                      <button className="secondary" onClick={() => setEntryRoom(room)}>
-                        + ยังไม่มีการบันทึก
-                      </button>
-                    )}
-                    <button className="plain-icon-btn" title="ประวัติ" onClick={() => setHistoryRoom(room)}>
-                      🕑
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div style={{ overflowX: "auto" }}>
+        <table className="bulk-table">
+          <thead>
+            <tr>
+              <th>ห้อง</th>
+              <th>ผู้เช่า</th>
+              <th>น้ำก่อนหน้า</th>
+              <th>น้ำปัจจุบัน</th>
+              <th>หน่วยน้ำ</th>
+              <th>ไฟก่อนหน้า</th>
+              <th>ไฟปัจจุบัน</th>
+              <th>หน่วยไฟ</th>
+              <th>สถานะ</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rooms.map((room) => (
+              <MeterRow
+                key={room.id}
+                room={room}
+                current={readingForMonth(room.id)}
+                prev={prevReading(room.id)}
+                edit={edits[room.id]}
+                onChange={setEdit}
+                onHistory={() => setHistoryRoom(room)}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
 
-      {entryRoom && (
-        <MeterEntryModal
-          room={entryRoom}
-          lastReading={readingsByRoom.get(entryRoom.id)?.[0] ?? null}
-          onClose={() => setEntryRoom(null)}
-          onSaved={notify}
-        />
-      )}
       {historyRoom && (
         <MeterHistoryModal room={historyRoom} history={readingsByRoom.get(historyRoom.id) ?? []} onClose={() => setHistoryRoom(null)} onSaved={notify} />
       )}
-      {showImport && <ImportModal onClose={() => setShowImport(false)} onSaved={notify} />}
+      {showImport && <ImportModal month={month} onClose={() => setShowImport(false)} onSaved={notify} />}
     </div>
   );
 }
 
-function MeterEntryModal({
+function MeterRow({
   room,
-  lastReading,
-  onClose,
-  onSaved,
+  current,
+  prev,
+  edit,
+  onChange,
+  onHistory,
 }: {
   room: RoomWithOcc;
-  lastReading: MeterReading | null;
-  onClose: () => void;
-  onSaved: (msg: string) => void;
+  current: MeterReading | null;
+  prev: MeterReading | null;
+  edit: EditCell | undefined;
+  onChange: (roomId: number, field: "water" | "electric", value: string) => void;
+  onHistory: () => void;
 }) {
-  const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
-  const [waterCurrent, setWaterCurrent] = useState("");
-  const [electricCurrent, setElectricCurrent] = useState("");
+  const recordedThisMonth = !!current;
+  const billed = recordedThisMonth && current!.billingStatus === "billed";
 
-  function submit(confirmAnyway: boolean) {
-    setError(null);
-    const formData = new FormData();
-    formData.set("roomId", String(room.id));
-    formData.set("waterCurrent", waterCurrent || "0");
-    formData.set("electricCurrent", electricCurrent || "0");
-    if (confirmAnyway) formData.set("confirmAnyway", "on");
+  const waterPrev = recordedThisMonth ? current!.waterPrev : prev?.waterCurrent ?? 0;
+  const electricPrev = recordedThisMonth ? current!.electricPrev : prev?.electricCurrent ?? 0;
+  const defaultWater = recordedThisMonth ? String(current!.waterCurrent) : "";
+  const defaultElectric = recordedThisMonth ? String(current!.electricCurrent) : "";
 
-    startTransition(async () => {
-      const result = await recordMeterReading(formData);
-      if (result?.warning) setWarning(result.warning);
-      else if (result?.error) setError(result.error);
-      else {
-        onSaved("บันทึกมิเตอร์แล้ว");
-        onClose();
-      }
-    });
-  }
+  const waterValue = edit?.water ?? defaultWater;
+  const electricValue = edit?.electric ?? defaultElectric;
+
+  const waterUnits = waterValue.trim() ? Number(waterValue) - waterPrev : null;
+  const electricUnits = electricValue.trim() ? Number(electricValue) - electricPrev : null;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h2>
-            บันทึกมิเตอร์ — ห้อง {room.roomNumber} {room.occupancies[0] && `(${room.occupancies[0].tenant.name})`}
-          </h2>
-          <button className="modal-close" onClick={onClose}>
-            <XIcon size={18} />
-          </button>
-        </div>
-        <div className="modal-body">
-          {error && <div className="form-error">{error}</div>}
-          {warning && (
-            <div className="form-error" style={{ background: "var(--warning-soft)", color: "var(--warning)" }}>
-              {warning}
-              <div style={{ marginTop: 8 }}>
-                <button type="button" onClick={() => { setWarning(null); submit(true); }} style={{ marginRight: 8 }}>
-                  ยืนยันบันทึกต่อ
-                </button>
-                <button type="button" className="secondary" onClick={() => setWarning(null)}>
-                  แก้ไขค่า
-                </button>
-              </div>
-            </div>
-          )}
-          <div className="bulk-preview-note">
-            ค่ามิเตอร์ครั้งก่อน — น้ำ: {lastReading?.waterCurrent ?? 0} · ไฟ: {lastReading?.electricCurrent ?? 0}
-          </div>
-          <div className="form-row">
-            <div className="field">
-              <label>น้ำปัจจุบัน</label>
-              <input type="number" step="0.01" value={waterCurrent} onChange={(e) => setWaterCurrent(e.target.value)} />
-            </div>
-            <div className="field">
-              <label>ไฟปัจจุบัน</label>
-              <input type="number" step="0.01" value={electricCurrent} onChange={(e) => setElectricCurrent(e.target.value)} />
-            </div>
-          </div>
-        </div>
-        <div className="modal-footer">
-          <button type="button" className="secondary" onClick={onClose}>
-            ยกเลิก
-          </button>
-          <button type="button" onClick={() => submit(false)} disabled={pending}>
-            {pending ? "กำลังบันทึก..." : "บันทึก"}
-          </button>
-        </div>
-      </div>
-    </div>
+    <tr>
+      <td>{room.roomNumber}</td>
+      <td>{room.occupancies[0]?.tenant.name ?? "-"}</td>
+      <td>{waterPrev}</td>
+      <td>
+        {billed ? (
+          current!.waterCurrent
+        ) : (
+          <input
+            type="number"
+            step="0.01"
+            value={waterValue}
+            onChange={(e) => onChange(room.id, "water", e.target.value)}
+            style={{ width: 90 }}
+          />
+        )}
+      </td>
+      <td style={{ color: waterUnits != null && waterUnits < 0 ? "var(--danger)" : undefined }}>
+        {waterUnits != null ? waterUnits.toFixed(1) : "-"}
+      </td>
+      <td>{electricPrev}</td>
+      <td>
+        {billed ? (
+          current!.electricCurrent
+        ) : (
+          <input
+            type="number"
+            step="0.01"
+            value={electricValue}
+            onChange={(e) => onChange(room.id, "electric", e.target.value)}
+            style={{ width: 90 }}
+          />
+        )}
+      </td>
+      <td style={{ color: electricUnits != null && electricUnits < 0 ? "var(--danger)" : undefined }}>
+        {electricUnits != null ? electricUnits.toFixed(1) : "-"}
+      </td>
+      <td>
+        {billed ? (
+          <span className="badge success">ออกบิลแล้ว</span>
+        ) : recordedThisMonth ? (
+          <span className="badge success">บันทึกแล้ว</span>
+        ) : (
+          <span className="badge neutral">ยังไม่บันทึก</span>
+        )}
+      </td>
+      <td>
+        <button type="button" className="plain-icon-btn" title="ประวัติ" onClick={onHistory}>
+          🕑
+        </button>
+      </td>
+    </tr>
   );
 }
 
@@ -267,15 +330,17 @@ function MeterHistoryModal({
 }) {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
 
   function saveEdit(id: number, waterCurrent: string, electricCurrent: string) {
+    setError(null);
     const formData = new FormData();
     formData.set("readingId", String(id));
     formData.set("waterCurrent", waterCurrent);
     formData.set("electricCurrent", electricCurrent);
     startTransition(async () => {
       const result = await updateMeterReading(formData);
-      if (result?.error) alert(result.error);
+      if (result?.error) setError(result.error);
       else {
         onSaved("แก้ไขแล้ว");
         setEditingId(null);
@@ -293,6 +358,7 @@ function MeterHistoryModal({
           </button>
         </div>
         <div className="modal-body">
+          {error && <div className="form-error">{error}</div>}
           <table>
             <thead>
               <tr>
@@ -377,13 +443,14 @@ function EditRow({
   );
 }
 
-function ImportModal({ onClose, onSaved }: { onClose: () => void; onSaved: (msg: string) => void }) {
+function ImportModal({ month, onClose, onSaved }: { month: string; onClose: () => void; onSaved: (msg: string) => void }) {
   const [pending, startTransition] = useTransition();
   const [result, setResult] = useState<{ imported: number; skipped: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   function handleSubmit(formData: FormData) {
     setError(null);
+    formData.set("month", month);
     startTransition(async () => {
       const res = await importMetersCsv(formData);
       if (res?.error) setError(res.error);
@@ -407,6 +474,8 @@ function ImportModal({ onClose, onSaved }: { onClose: () => void; onSaved: (msg:
           {error && <div className="form-error">{error}</div>}
           <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
             ใช้โครงคอลัมน์เดียวกับไฟล์ที่ Export ออกไป: หมายเลขห้อง, ผู้เช่า, มิเตอร์น้ำครั้งล่าสุด, มิเตอร์น้ำปัจจุบัน, มิเตอร์ไฟครั้งล่าสุด, มิเตอร์ไฟปัจจุบัน
+            <br />
+            จะนำเข้าเป็นข้อมูลของเดือน <strong>{month}</strong>
           </p>
           <form action={handleSubmit}>
             <input name="file" type="file" accept=".csv" required />

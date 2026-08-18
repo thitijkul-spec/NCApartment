@@ -3,10 +3,11 @@
 import { prisma } from "@/lib/prisma";
 import { requireAccess } from "@/lib/auth";
 import { saveUploadedFile } from "@/lib/upload";
+import { logAudit } from "@/lib/audit";
 import { revalidatePath } from "next/cache";
 
 export async function createRepairRequest(formData: FormData) {
-  const { building } = await requireAccess("maintenance");
+  const { user, building } = await requireAccess("maintenance");
   const roomId = Number(formData.get("roomId"));
   const title = String(formData.get("title") || "").trim();
   const categoryId = Number(formData.get("categoryId"));
@@ -16,6 +17,7 @@ export async function createRepairRequest(formData: FormData) {
   if (!category) return { error: "ไม่พบประเภทงานซ่อม" };
 
   const occupancy = await prisma.roomOccupancy.findFirst({ where: { roomId, status: "active" } });
+  const room = await prisma.room.findUnique({ where: { id: roomId } });
 
   const files = formData.getAll("photos") as File[];
   const photoUrls: string[] = [];
@@ -24,7 +26,7 @@ export async function createRepairRequest(formData: FormData) {
     if (url) photoUrls.push(url);
   }
 
-  await prisma.repairRequest.create({
+  const request = await prisma.repairRequest.create({
     data: {
       buildingId: building.id,
       roomId,
@@ -40,40 +42,86 @@ export async function createRepairRequest(formData: FormData) {
     },
   });
 
+  await logAudit({
+    buildingId: building.id,
+    actorUserId: user.id,
+    actorName: user.name,
+    actionType: "create",
+    moduleTag: "แจ้งซ่อม",
+    entityType: "RepairRequest",
+    entityId: request.id,
+    entityLabel: `ห้อง ${room?.roomNumber ?? roomId} — ${title}`,
+    description: `สร้างงานแจ้งซ่อม ห้อง ${room?.roomNumber ?? roomId} — ${title}`,
+  });
+
   revalidatePath("/repairs");
   revalidatePath("/rooms");
 }
 
 export async function updateRepairStatus(formData: FormData) {
-  await requireAccess("maintenance");
+  const { user, building } = await requireAccess("maintenance");
   const id = Number(formData.get("requestId"));
   const status = String(formData.get("status") || "");
-  await prisma.repairRequest.update({
+  const existing = await prisma.repairRequest.findFirst({ where: { id, buildingId: building.id } });
+  if (!existing) return { error: "ไม่พบงานแจ้งซ่อม" };
+  const request = await prisma.repairRequest.update({
     where: { id },
     data: { status, completedAt: status === "completed" ? new Date() : null },
+  });
+  await logAudit({
+    buildingId: building.id,
+    actorUserId: user.id,
+    actorName: user.name,
+    actionType: "status_change",
+    moduleTag: "แจ้งซ่อม",
+    entityType: "RepairRequest",
+    entityId: id,
+    entityLabel: request.title,
+    description: `เปลี่ยนสถานะงานแจ้งซ่อม "${request.title}" เป็น "${status}"`,
   });
   revalidatePath("/repairs");
   revalidatePath("/rooms");
 }
 
 export async function assignTechnician(formData: FormData) {
-  await requireAccess("maintenance");
+  const { building } = await requireAccess("maintenance");
   const id = Number(formData.get("requestId"));
   const technicianId = formData.get("technicianId") ? Number(formData.get("technicianId")) : null;
+  const existing = await prisma.repairRequest.findFirst({ where: { id, buildingId: building.id } });
+  if (!existing) return { error: "ไม่พบงานแจ้งซ่อม" };
+  if (technicianId) {
+    const technician = await prisma.technician.findFirst({ where: { id: technicianId, buildingId: building.id } });
+    if (!technician) return { error: "ไม่พบช่างซ่อม" };
+  }
   await prisma.repairRequest.update({ where: { id }, data: { assignedTechnicianId: technicianId } });
   revalidatePath("/repairs");
 }
 
 export async function markRepairRead(requestId: number) {
-  await requireAccess("maintenance");
+  const { building } = await requireAccess("maintenance");
+  const existing = await prisma.repairRequest.findFirst({ where: { id: requestId, buildingId: building.id } });
+  if (!existing) return;
   await prisma.repairRequest.update({ where: { id: requestId }, data: { isRead: true } });
   revalidatePath("/repairs");
 }
 
 export async function deleteRepairRequest(formData: FormData) {
-  await requireAccess("maintenance");
+  const { user, building } = await requireAccess("maintenance");
   const id = Number(formData.get("requestId"));
-  await prisma.repairRequest.delete({ where: { id } });
+  const existing = await prisma.repairRequest.findFirst({ where: { id, buildingId: building.id } });
+  if (!existing) return { error: "ไม่พบงานแจ้งซ่อม" };
+  const request = await prisma.repairRequest.delete({ where: { id } });
+  await logAudit({
+    buildingId: building.id,
+    actorUserId: user.id,
+    actorName: user.name,
+    actionType: "delete",
+    moduleTag: "แจ้งซ่อม",
+    entityType: "RepairRequest",
+    entityId: id,
+    entityLabel: request.title,
+    description: `ลบงานแจ้งซ่อม "${request.title}"`,
+  });
   revalidatePath("/repairs");
   revalidatePath("/rooms");
 }
@@ -87,8 +135,10 @@ export async function createCategory(formData: FormData) {
 }
 
 export async function deleteCategory(formData: FormData) {
-  await requireAccess("maintenance");
+  const { building } = await requireAccess("maintenance");
   const id = Number(formData.get("categoryId"));
+  const existing = await prisma.repairCategory.findFirst({ where: { id, buildingId: building.id } });
+  if (!existing) return { error: "ไม่พบประเภทงานซ่อม" };
   await prisma.repairCategory.delete({ where: { id } });
   revalidatePath("/repairs");
 }
@@ -102,9 +152,11 @@ export async function createTechnician(formData: FormData) {
 }
 
 export async function toggleTechnicianActive(formData: FormData) {
-  await requireAccess("maintenance");
+  const { building } = await requireAccess("maintenance");
   const id = Number(formData.get("technicianId"));
   const active = formData.get("active") === "on";
+  const existing = await prisma.technician.findFirst({ where: { id, buildingId: building.id } });
+  if (!existing) return { error: "ไม่พบช่างซ่อม" };
   await prisma.technician.update({ where: { id }, data: { active } });
   revalidatePath("/repairs");
 }
@@ -118,8 +170,10 @@ export async function createSharedEquipment(formData: FormData) {
 }
 
 export async function deleteSharedEquipment(formData: FormData) {
-  await requireAccess("maintenance");
+  const { building } = await requireAccess("maintenance");
   const id = Number(formData.get("equipmentId"));
+  const existing = await prisma.sharedEquipment.findFirst({ where: { id, buildingId: building.id } });
+  if (!existing) return { error: "ไม่พบครุภัณฑ์" };
   await prisma.sharedEquipment.delete({ where: { id } });
   revalidatePath("/repairs");
 }

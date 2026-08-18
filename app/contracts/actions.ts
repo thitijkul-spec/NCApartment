@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { requireAccess } from "@/lib/auth";
 import { saveBase64Image } from "@/lib/upload";
+import { logAudit } from "@/lib/audit";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
@@ -42,12 +43,17 @@ function readContractFields(formData: FormData) {
 }
 
 export async function createContract(formData: FormData) {
-  const { building } = await requireAccess("tenant");
+  const { user, building } = await requireAccess("tenant");
 
   const roomId = Number(formData.get("roomId"));
   const tenantId = Number(formData.get("tenantId"));
   const occupancyId = formData.get("occupancyId") ? Number(formData.get("occupancyId")) : null;
   if (!roomId || !tenantId) return { error: "กรุณาเลือกห้องและผู้เช่า" };
+
+  const [room, tenant] = await Promise.all([
+    prisma.room.findUnique({ where: { id: roomId } }),
+    prisma.tenant.findUnique({ where: { id: tenantId } }),
+  ]);
 
   const payee = await prisma.buildingPayeeSettings.findUnique({ where: { buildingId: building.id } });
   const templates = await prisma.contractClauseTemplate.findMany({ where: { buildingId: building.id } });
@@ -64,6 +70,8 @@ export async function createContract(formData: FormData) {
       payeeIdCardNoSnapshot: payee?.payeeIdCardNo ?? null,
       payeePhoneSnapshot: payee?.payeePhone ?? null,
       payeeAddressSnapshot: payee?.payeeAddress ?? null,
+      // ลายเซ็นเจ้าของ snapshot จากที่อัปโหลดไว้ล่วงหน้าที่ตั้งค่า > ข้อมูลผู้รับเงิน — ไม่ต้องเซ็นซ้ำทุกฉบับ
+      ownerSignatureImage: payee?.signatureImageUrl ?? null,
       ...readContractFields(formData),
       clauseSelections: {
         create: templates.map((t) => ({ clauseTemplateId: t.id, included: selectedTemplateIds.has(t.id) })),
@@ -71,7 +79,31 @@ export async function createContract(formData: FormData) {
     },
   });
 
+  if (contract.depositAmount > 0) {
+    await prisma.deposit.create({
+      data: {
+        contractId: contract.id,
+        roomId: contract.roomId,
+        amount: contract.depositAmount,
+        collectedDate: contract.contractDate,
+      },
+    });
+  }
+
+  await logAudit({
+    buildingId: building.id,
+    actorUserId: user.id,
+    actorName: user.name,
+    actionType: "create",
+    moduleTag: "เอกสารสัญญา",
+    entityType: "Contract",
+    entityId: contract.id,
+    entityLabel: `ห้อง ${room?.roomNumber ?? roomId} — ${tenant?.name ?? tenantId}`,
+    description: `สร้างสัญญาห้อง ${room?.roomNumber ?? roomId} — ${tenant?.name ?? tenantId}`,
+  });
+
   revalidatePath("/contracts");
+  revalidatePath("/accounting");
   redirect(`/contracts/${contract.id}`);
 }
 
@@ -91,7 +123,7 @@ export async function updateContract(formData: FormData) {
       where: { id },
       data: {
         ...readContractFields(formData),
-        ...(wasSigned ? { ownerSignatureImage: null, signedAt: null } : {}),
+        ...(wasSigned ? { tenantSignatureImage: null, signedAt: null } : {}),
         clauseSelections: {
           create: templates.map((t) => ({ clauseTemplateId: t.id, included: selectedTemplateIds.has(t.id) })),
         },
@@ -113,14 +145,14 @@ export async function saveSignature(formData: FormData) {
   const url = await saveBase64Image(dataUrl, "signatures");
   if (!url) return { error: "ลายเซ็นไม่ถูกต้อง กรุณาลองใหม่" };
 
-  await prisma.contract.update({ where: { id }, data: { ownerSignatureImage: url, signedAt: new Date() } });
+  await prisma.contract.update({ where: { id }, data: { tenantSignatureImage: url, signedAt: new Date() } });
   revalidatePath(`/contracts/${id}`);
 }
 
 export async function deleteContract(formData: FormData) {
-  const { building } = await requireAccess("tenant");
+  const { user, building } = await requireAccess("tenant");
   const id = Number(formData.get("contractId"));
-  const contract = await prisma.contract.findFirst({ where: { id, buildingId: building.id } });
+  const contract = await prisma.contract.findFirst({ where: { id, buildingId: building.id }, include: { room: true, tenant: true } });
   if (!contract) return { error: "ไม่พบสัญญา" };
 
   if (contract.signedAt) {
@@ -135,6 +167,18 @@ export async function deleteContract(formData: FormData) {
       return { error: "ลบไม่ได้ — มีบิลหรือข้อมูลอื่นผูกกับสัญญานี้อยู่แล้ว" };
     }
   }
+
+  await logAudit({
+    buildingId: building.id,
+    actorUserId: user.id,
+    actorName: user.name,
+    actionType: "delete",
+    moduleTag: "เอกสารสัญญา",
+    entityType: "Contract",
+    entityId: id,
+    entityLabel: `ห้อง ${contract.room.roomNumber} — ${contract.tenant.name}`,
+    description: `${contract.signedAt ? "เก็บเข้าคลัง" : "ลบ"}สัญญาห้อง ${contract.room.roomNumber} — ${contract.tenant.name}`,
+  });
 
   revalidatePath("/contracts");
   redirect("/contracts");

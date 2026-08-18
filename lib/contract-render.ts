@@ -9,9 +9,10 @@ export type ContractRenderData = Contract & {
   clauseSelections: (ContractClauseSelection & { clauseTemplate: ContractClauseTemplate })[];
 };
 
+import { formatDateBE } from "./date-utils";
+
 function fmtDateTh(d: Date | null) {
-  if (!d) return "";
-  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "long", day: "numeric" });
+  return formatDateBE(d, "");
 }
 function fmtDateEn(d: Date | null) {
   if (!d) return "";

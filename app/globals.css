@@ -9,6 +9,7 @@
   --accent-dark: #1d4ed8;
   --accent-darker: #1e40af;
   --accent-soft: #eef4ff;
+  --accent-soft-strong: #c9ddff;
   --success: #059669;
   --success-soft: #d1fae5;
   --warning: #d97706;
@@ -39,6 +40,7 @@
     --accent-dark: #7ca3f5;
     --accent-darker: #9dbbf8;
     --accent-soft: #1b2a4d;
+    --accent-soft-strong: #2a4278;
     --success: #34d399;
     --success-soft: #0f2c24;
     --warning: #fbbf24;
@@ -378,6 +380,11 @@ th {
   color: var(--text-muted);
 }
 
+.badge.occupied {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .status-buttons {
   display: flex;
   gap: 6px;
@@ -675,6 +682,63 @@ th {
   border-radius: 999px;
 }
 
+.rental-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.rental-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.rental-tag.monthly {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.rental-tag.daily {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.room-card-quick-checkin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  background: var(--success-soft);
+  color: var(--success);
+  border: 1px dashed var(--success);
+  font-weight: 700;
+}
+
+.room-card-quick-checkin:hover {
+  background: var(--success);
+  color: #fff;
+}
+
+.room-card-pay-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px dashed var(--danger);
+  font-weight: 700;
+}
+
+.room-card-pay-btn:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
 .room-card-status-select {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -682,6 +746,86 @@ th {
   font-size: 12px;
   color: var(--text-muted);
   background: var(--surface);
+}
+
+.room-card-billing.available {
+  background: var(--success-soft);
+  border-color: var(--success);
+}
+
+.room-card-billing.monthly {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.room-card-billing.daily {
+  background: var(--accent-soft-strong);
+  border-color: var(--accent);
+}
+
+.room-card-billing.overdue {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+.room-card-billing.pending {
+  background: var(--warning-soft);
+  border-color: var(--warning);
+}
+
+.room-card-billing.maintenance {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.month-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.month-nav-arrow {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.month-nav-arrow:hover {
+  background: var(--accent-soft);
+}
+
+.month-nav-label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 14px;
+  border: none;
+  border-radius: 999px;
+  padding: 7px 16px;
+  white-space: nowrap;
+}
+
+.month-nav-label input[type="month"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  border: none;
+  width: 100%;
 }
 
 .room-card-checkbox {
@@ -802,6 +946,42 @@ th {
   border-bottom-color: var(--accent);
 }
 
+.utility-row {
+  border-top: 1px solid var(--border);
+  padding: 12px 0;
+}
+
+.utility-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.utility-row-title {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.utility-row-building-rate {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.utility-row-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+
+.utility-row-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
 .bulk-preview-note {
   background: var(--accent-soft);
   color: var(--accent);
@@ -890,10 +1070,22 @@ th {
   background: var(--accent-soft);
 }
 
+.print-only {
+  display: none;
+}
+
+.print-page-break {
+  page-break-after: always;
+  break-after: page;
+}
+
 @media print {
   .sidebar,
   .no-print {
     display: none !important;
+  }
+  .print-only {
+    display: block;
   }
   .main {
     padding: 0;

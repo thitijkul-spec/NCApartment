@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { requireAccess } from "@/lib/auth";
 import { saveUploadedFile } from "@/lib/upload";
+import { logAudit } from "@/lib/audit";
 import { revalidatePath } from "next/cache";
 
 function readVehicles(formData: FormData) {
@@ -46,7 +47,7 @@ async function findDuplicates(buildingId: number, phone: string | null, idCardNo
 }
 
 export async function createTenant(formData: FormData) {
-  const { building } = await requireAccess("tenant");
+  const { user, building } = await requireAccess("tenant");
   const fields = readTenantFields(formData);
   if (!fields.name) return { error: "กรุณากรอกชื่อ-นามสกุล" };
 
@@ -59,7 +60,7 @@ export async function createTenant(formData: FormData) {
 
   const idCardImageUrl = await saveUploadedFile(formData.get("idCardImage") as File | null, "tenants");
 
-  await prisma.tenant.create({
+  const tenant = await prisma.tenant.create({
     data: {
       buildingId: building.id,
       ...fields,
@@ -67,6 +68,18 @@ export async function createTenant(formData: FormData) {
       tenantType: String(formData.get("tenantType") || "monthly"),
       vehicles: { create: readVehicles(formData) },
     },
+  });
+
+  await logAudit({
+    buildingId: building.id,
+    actorUserId: user.id,
+    actorName: user.name,
+    actionType: "create",
+    moduleTag: "ผู้เช่า",
+    entityType: "Tenant",
+    entityId: tenant.id,
+    entityLabel: tenant.name,
+    description: `เพิ่มผู้เช่า ${tenant.name}`,
   });
 
   revalidatePath("/tenants");
@@ -128,7 +141,7 @@ export async function restoreTenant(formData: FormData) {
 }
 
 export async function deleteTenant(formData: FormData) {
-  const { building } = await requireAccess("tenant");
+  const { user, building } = await requireAccess("tenant");
   const id = Number(formData.get("tenantId"));
   const tenant = await prisma.tenant.findFirst({
     where: { id, buildingId: building.id },
@@ -148,6 +161,19 @@ export async function deleteTenant(formData: FormData) {
   } else {
     await prisma.tenant.update({ where: { id }, data: { archivedAt: new Date() } });
   }
+
+  await logAudit({
+    buildingId: building.id,
+    actorUserId: user.id,
+    actorName: user.name,
+    actionType: "delete",
+    moduleTag: "ผู้เช่า",
+    entityType: "Tenant",
+    entityId: id,
+    entityLabel: tenant.name,
+    description: `${permanent ? "ลบ" : "เก็บเข้าคลัง"}ผู้เช่า ${tenant.name}`,
+  });
+
   revalidatePath("/tenants");
 }
 

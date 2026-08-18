@@ -5,9 +5,11 @@ import type { TenantWithRelations } from "./types";
 import { archiveTenant, deleteTenant } from "./actions";
 import { XIcon, PersonIcon, DoorIcon } from "../icons";
 
+import { formatDateBE } from "@/lib/date-utils";
+import { formatNumber } from "@/lib/format";
+
 function fmtDate(d: Date | string | null | undefined) {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" });
+  return formatDateBE(d);
 }
 
 export default function TenantDetailModal({
@@ -75,7 +77,7 @@ export default function TenantDetailModal({
                   <span style={{ color: "var(--text-muted)", fontSize: 13 }}>ชั้น {o.room.floor}</span>
                 </div>
                 <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                  เข้าพัก {fmtDate(o.checkinDate)} · วันออก(วางแผน) {fmtDate(o.plannedCheckoutDate)} · มัดจำ ฿{o.depositAmount ?? 0}
+                  เข้าพัก {fmtDate(o.checkinDate)} · วันออก(วางแผน) {fmtDate(o.plannedCheckoutDate)} · มัดจำ ฿{formatNumber(o.depositAmount ?? 0)}
                 </p>
               </div>
             );

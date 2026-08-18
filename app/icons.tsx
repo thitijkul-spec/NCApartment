@@ -250,3 +250,23 @@ export function ChevronDownIcon({ size = 18 }: IconProps) {
     </svg>
   );
 }
+
+export function PackageIcon({ size = 18 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...base}>
+      <path d="M21 8 12 3 3 8v8l9 5 9-5V8Z" />
+      <path d="M3 8l9 5 9-5" />
+      <line x1="12" y1="13" x2="12" y2="21" />
+    </svg>
+  );
+}
+
+export function HistoryIcon({ size = 18 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...base}>
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <polyline points="3 4 3 9 8 9" />
+      <polyline points="12 7 12 12 16 14" />
+    </svg>
+  );
+}

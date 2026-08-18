@@ -35,6 +35,8 @@ export async function updateClause(formData: FormData) {
   const { building } = await requireAccess("setting");
   const id = Number(formData.get("id"));
   if (!id) return;
+  const existing = await prisma.contractClauseTemplate.findFirst({ where: { id, buildingId: building.id } });
+  if (!existing) return { error: "ไม่พบข้อสัญญา" };
 
   await prisma.contractClauseTemplate.update({
     where: { id },
@@ -51,9 +53,11 @@ export async function updateClause(formData: FormData) {
 }
 
 export async function deleteClause(formData: FormData) {
-  await requireAccess("setting");
+  const { building } = await requireAccess("setting");
   const id = Number(formData.get("id"));
   if (!id) return;
+  const existing = await prisma.contractClauseTemplate.findFirst({ where: { id, buildingId: building.id } });
+  if (!existing) return { error: "ไม่พบข้อสัญญา" };
   await prisma.contractClauseTemplate.delete({ where: { id } });
   revalidatePath("/settings/contract-clauses");
 }

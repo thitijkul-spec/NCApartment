@@ -8,8 +8,10 @@ import { XIcon, TrashIcon } from "../icons";
 const STATUS_LABEL: Record<string, string> = { pending: "รอดำเนินการ", in_progress: "กำลังดำเนินการ", completed: "เสร็จสิ้น" };
 const PRIORITY_LABEL: Record<string, string> = { low: "ต่ำ", medium: "ปานกลาง", high: "สูง", urgent: "เร่งด่วน" };
 
+import { formatDateTimeBE } from "@/lib/date-utils";
+
 function fmtDateTime(d: Date | string) {
-  return new Date(d).toLocaleString("th-TH", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return formatDateTimeBE(d);
 }
 
 export default function RepairDetailModal({

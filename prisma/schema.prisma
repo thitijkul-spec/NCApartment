@@ -175,8 +175,8 @@ model Booking {
   bookingCode          String    @unique
   buildingId           Int
   building             Building  @relation(fields: [buildingId], references: [id])
-  roomId               Int
-  room                 Room      @relation(fields: [roomId], references: [id])
+  roomId               Int? // ไม่บังคับ — จองได้ก่อนรู้ว่าห้องไหนว่าง แล้วค่อยเลือกห้องทีหลัง
+  room                 Room?     @relation(fields: [roomId], references: [id])
   tenantId             Int?
   tenant               Tenant?   @relation(fields: [tenantId], references: [id])
   bookingType          String // monthly | daily
@@ -335,9 +335,11 @@ model Contract {
   requireWitness Boolean @default(false)
   witnessNames   String? // JSON array, สูงสุด 4 ชื่อ
 
-  // แก้ไขสัญญาหลังเซ็นแล้ว → เคลียร์ 2 field นี้ทิ้งทันที ต้องเซ็นใหม่
+  // ownerSignatureImage = snapshot จาก BuildingPayeeSettings.signatureImageUrl ตอนสร้างสัญญา (เจ้าของอัปโหลดไว้ล่วงหน้าที่ตั้งค่า ไม่ต้องเซ็นซ้ำทุกฉบับ)
   ownerSignatureImage String?
-  signedAt            DateTime?
+  // tenantSignatureImage = ผู้เช่าวาดเซ็นเองต่อฉบับ — แก้ไขสัญญาหลังเซ็นแล้ว → เคลียร์ 2 field นี้ทิ้งทันที ต้องเซ็นใหม่
+  tenantSignatureImage String?
+  signedAt             DateTime?
 
   archivedAt DateTime? // soft-delete: สัญญาที่เซ็นแล้วลบจริงไม่ได้
   createdAt  DateTime  @default(now())
@@ -602,9 +604,9 @@ model Expense {
   id                    Int       @id @default(autoincrement())
   buildingId            Int
   building              Building  @relation(fields: [buildingId], references: [id])
-  documentNo            String    @unique // "EXP-YYYY-MM-###" รันแยกต่ออาคาร รีเซ็ตรายเดือน
+  documentNo            String // "EXP-YYYY-MM-###" รันแยกต่ออาคาร รีเซ็ตรายเดือน
   vendorContactId       Int?
-  vendorContact         Contact?  @relation(fields: [vendorContactId], references: [id])
+  vendorContact         Contact?  @relation(fields: [vendorContactId], references: [id], onDelete: SetNull)
   vendorNameSnapshot    String?
   vendorTaxIdSnapshot   String?
   vendorAddressSnapshot String?
@@ -623,6 +625,8 @@ model Expense {
 
   lineItems ExpenseLineItem[]
   payments  ExpensePayment[]
+
+  @@unique([buildingId, documentNo])
 }
 
 model ExpenseLineItem {
@@ -658,12 +662,12 @@ model OtherIncome {
   id                   Int       @id @default(autoincrement())
   buildingId           Int
   building             Building  @relation(fields: [buildingId], references: [id])
-  documentNo           String    @unique // "INC-YYYY-MM-###"
+  documentNo           String // "INC-YYYY-MM-###"
   buyerType            String // tenant | contact
   buyerTenantId        Int?
   buyerTenant          Tenant?   @relation(fields: [buyerTenantId], references: [id])
   buyerContactId       Int?
-  buyerContact         Contact?  @relation(fields: [buyerContactId], references: [id])
+  buyerContact         Contact?  @relation(fields: [buyerContactId], references: [id], onDelete: SetNull)
   buyerNameSnapshot    String?
   buyerTaxIdSnapshot   String?
   buyerAddressSnapshot String?
@@ -683,6 +687,8 @@ model OtherIncome {
   lineItems OtherIncomeLineItem[]
   payments  OtherIncomePayment[]
   deposits  Deposit[] // ริบเงินมัดจำ → สร้าง OtherIncome หมวด "เงินมัดจำริบ" อัตโนมัติ
+
+  @@unique([buildingId, documentNo])
 }
 
 model OtherIncomeLineItem {
@@ -755,7 +761,7 @@ model DailyBill {
   id                    Int      @id @default(autoincrement())
   buildingId            Int
   building              Building @relation(fields: [buildingId], references: [id])
-  documentNo            String   @unique // "DLY-YYYY-MM-###"
+  documentNo            String // "DLY-YYYY-MM-###"
   roomId                Int
   room                  Room     @relation(fields: [roomId], references: [id])
   tenantId              Int
@@ -768,7 +774,10 @@ model DailyBill {
   accountId             Int
   account               Account  @relation(fields: [accountId], references: [id])
   method                String // cash | transfer | credit_card
+  transferTime          String? // "HH:MM" เฉพาะตอน method=transfer — เวลาที่ลูกค้าโอนจริง (คนละอันกับ createdAt ที่พนักงานกดบันทึก)
   createdAt             DateTime @default(now())
+
+  @@unique([buildingId, documentNo])
 }
 
 // ===================== ประวัติการใช้งาน (module_audit) =====================

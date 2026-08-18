@@ -6,9 +6,18 @@ import { CalendarIcon } from "../icons";
 
 type ContractRow = Contract & { tenant: Tenant; room: Room };
 
+import { formatDateBE } from "@/lib/date-utils";
+
 function fmtDate(d: Date | string | null | undefined) {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" });
+  return formatDateBE(d);
+}
+
+function monthsBetween(start: Date | string, end: Date | string | null | undefined) {
+  if (!end) return "-";
+  const s = new Date(start);
+  const e = new Date(end);
+  const months = (e.getFullYear() - s.getFullYear()) * 12 + (e.getMonth() - s.getMonth());
+  return `${Math.max(months, 0)} เดือน`;
 }
 
 export default function ContractsClient({ contracts, buildingName }: { contracts: ContractRow[]; buildingName: string }) {
@@ -43,10 +52,10 @@ export default function ContractsClient({ contracts, buildingName }: { contracts
       <table>
         <thead>
           <tr>
-            <th>ผู้เช่า</th>
             <th>ห้อง</th>
+            <th>ผู้เช่า</th>
             <th>ระยะเวลา</th>
-            <th>ค่าเช่า/เดือน</th>
+            <th>จำนวนเดือน</th>
             <th>สถานะ</th>
             <th>การดำเนินการ</th>
           </tr>
@@ -54,12 +63,12 @@ export default function ContractsClient({ contracts, buildingName }: { contracts
         <tbody>
           {filtered.map((c) => (
             <tr key={c.id}>
-              <td>{c.tenant.name}</td>
               <td>{c.room.roomNumber}</td>
+              <td>{c.tenant.name}</td>
               <td>
                 {fmtDate(c.startDate)} — {c.noEndDate ? "ไม่มีกำหนด" : fmtDate(c.endDate)}
               </td>
-              <td>฿{c.rentAmount.toLocaleString()}</td>
+              <td>{c.noEndDate ? "ไม่มีกำหนด" : monthsBetween(c.startDate, c.endDate)}</td>
               <td>
                 <span className={`badge ${c.signedAt ? "success" : "warning"}`}>{c.signedAt ? "เซ็นแล้ว" : "ยังไม่เซ็น"}</span>
               </td>

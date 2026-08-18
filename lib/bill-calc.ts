@@ -29,12 +29,13 @@ export function buildMonthlyLineItems(
     const rate = water.useBuildingDefault ? settings?.defaultWaterRate : water.rate;
     if (mode === "metered") {
       if (meterReading) {
+        const waterUnits = Math.max(0, meterReading.waterUnits);
         lineItems.push({
           itemType: "water",
-          description: `ค่าน้ำ (${meterReading.waterUnits} หน่วย)`,
-          quantity: meterReading.waterUnits,
+          description: `ค่าน้ำ (${waterUnits} หน่วย)`,
+          quantity: waterUnits,
           unitPrice: rate ?? 0,
-          amount: meterReading.waterUnits * (rate ?? 0),
+          amount: waterUnits * (rate ?? 0),
         });
         meterReadingConsumed = true;
       } else {
@@ -51,12 +52,13 @@ export function buildMonthlyLineItems(
     const rate = electric.useBuildingDefault ? settings?.defaultElectricRate : electric.rate;
     if (mode === "metered") {
       if (meterReading) {
+        const electricUnits = Math.max(0, meterReading.electricUnits);
         lineItems.push({
           itemType: "electric",
-          description: `ค่าไฟ (${meterReading.electricUnits} หน่วย)`,
-          quantity: meterReading.electricUnits,
+          description: `ค่าไฟ (${electricUnits} หน่วย)`,
+          quantity: electricUnits,
           unitPrice: rate ?? 0,
-          amount: meterReading.electricUnits * (rate ?? 0),
+          amount: electricUnits * (rate ?? 0),
         });
         meterReadingConsumed = true;
       } else {
@@ -81,7 +83,14 @@ export function buildMonthlyLineItems(
 
   const extraFees = parseUtility<ExtraFee[]>(room.extraMonthlyFees, []);
   for (const fee of extraFees) {
-    lineItems.push({ itemType: "extra_fee", description: fee.name, quantity: null, unitPrice: null, amount: fee.amount });
+    const qty = fee.qty ?? 1;
+    lineItems.push({
+      itemType: "extra_fee",
+      description: qty !== 1 ? `${fee.name} x${qty}` : fee.name,
+      quantity: qty !== 1 ? qty : null,
+      unitPrice: qty !== 1 ? fee.amount : null,
+      amount: fee.amount * qty,
+    });
   }
 
   return { lineItems, warnings, meterReadingConsumed };

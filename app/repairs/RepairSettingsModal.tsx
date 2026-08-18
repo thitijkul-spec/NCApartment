@@ -44,7 +44,7 @@ export default function RepairSettingsModal({
               {categories.map((c) => (
                 <div key={c.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
                   <span>{c.name}</span>
-                  <form action={(fd) => startTransition(() => deleteCategory(fd))}>
+                  <form action={(fd) => startTransition(async () => { await deleteCategory(fd); })}>
                     <input type="hidden" name="categoryId" value={c.id} />
                     <button type="submit" className="plain-icon-btn">
                       <TrashIcon size={16} />
@@ -71,7 +71,7 @@ export default function RepairSettingsModal({
                   <form
                     action={(fd) => {
                       fd.set("active", t.active ? "" : "on");
-                      startTransition(() => toggleTechnicianActive(fd));
+                      startTransition(async () => { await toggleTechnicianActive(fd); });
                     }}
                   >
                     <input type="hidden" name="technicianId" value={t.id} />
@@ -98,7 +98,7 @@ export default function RepairSettingsModal({
                   <span>
                     {e.name} ({e.type === "washer" ? "เครื่องซักผ้า" : e.type === "dryer" ? "เครื่องอบผ้า" : "ตู้กดน้ำ"})
                   </span>
-                  <form action={(fd) => startTransition(() => deleteSharedEquipment(fd))}>
+                  <form action={(fd) => startTransition(async () => { await deleteSharedEquipment(fd); })}>
                     <input type="hidden" name="equipmentId" value={e.id} />
                     <button type="submit" className="plain-icon-btn">
                       <TrashIcon size={16} />

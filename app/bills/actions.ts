@@ -5,6 +5,8 @@ import { requireAccess } from "@/lib/auth";
 import { saveUploadedFile } from "@/lib/upload";
 import { generateBillNo, generateReceiptNo, generateTaxInvoiceNo } from "@/lib/bill-numbering";
 import { buildMonthlyLineItems, buildMoveInLineItems, billTotal, type DraftLineItem } from "@/lib/bill-calc";
+import { createLedgerEntry } from "@/lib/ledger";
+import { logAudit } from "@/lib/audit";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
@@ -26,7 +28,8 @@ async function createBillFromLineItems(
   billingMonth: string,
   dueDate: Date,
   lineItems: DraftLineItem[],
-  meterReadingIds: number[]
+  meterReadingIds: number[],
+  actor: { id: number; name: string }
 ) {
   const billNo = await generateBillNo(buildingId);
   const bill = await prisma.bill.create({
@@ -49,11 +52,25 @@ async function createBillFromLineItems(
       data: { billingStatus: "billed", billId: bill.id },
     });
   }
+
+  const room = await prisma.room.findUnique({ where: { id: roomId } });
+  await logAudit({
+    buildingId,
+    actorUserId: actor.id,
+    actorName: actor.name,
+    actionType: "create",
+    moduleTag: "ใบแจ้งหนี้",
+    entityType: "Bill",
+    entityId: bill.id,
+    entityLabel: billNo,
+    description: `สร้างบิล ${billNo} ห้อง ${room?.roomNumber ?? roomId} งวด ${billingMonth}`,
+  });
+
   return bill;
 }
 
 export async function issueSingleBill(formData: FormData) {
-  const { building } = await requireAccess("finance");
+  const { user, building } = await requireAccess("finance");
   const roomId = Number(formData.get("roomId"));
   const billingMonth = String(formData.get("billingMonth") || "");
   if (!roomId || !billingMonth) return { error: "กรุณาเลือกห้องและเดือนที่ออกบิล" };
@@ -81,7 +98,8 @@ export async function issueSingleBill(formData: FormData) {
     billingMonth,
     dueDateFor(billingMonth, contract.paymentDueDay),
     lineItems,
-    meterReadingConsumed && meterReading ? [meterReading.id] : []
+    meterReadingConsumed && meterReading ? [meterReading.id] : [],
+    { id: user.id, name: user.name }
   );
 
   revalidatePath("/bills");
@@ -90,7 +108,7 @@ export async function issueSingleBill(formData: FormData) {
 }
 
 export async function issueBulkBills(formData: FormData) {
-  const { building } = await requireAccess("finance");
+  const { user, building } = await requireAccess("finance");
   const billingMonth = String(formData.get("billingMonth") || "");
   if (!billingMonth) return { error: "กรุณาระบุเดือนที่ออกบิล" };
 
@@ -129,7 +147,8 @@ export async function issueBulkBills(formData: FormData) {
       billingMonth,
       dueDateFor(billingMonth, contract.paymentDueDay),
       lineItems,
-      meterReadingConsumed && meterReading ? [meterReading.id] : []
+      meterReadingConsumed && meterReading ? [meterReading.id] : [],
+      { id: user.id, name: user.name }
     );
     issued++;
     if (warnings.length > 0) skipped.push(`ห้อง ${occ.room.roomNumber}: ${warnings.join(", ")} (ออกบิลแล้วแต่ไม่รวมรายการนี้)`);
@@ -140,7 +159,7 @@ export async function issueBulkBills(formData: FormData) {
 }
 
 export async function issueMoveInBill(formData: FormData) {
-  const { building } = await requireAccess("finance");
+  const { user, building } = await requireAccess("finance");
   const contractId = Number(formData.get("contractId"));
   const contract = await prisma.contract.findFirst({ where: { id: contractId, buildingId: building.id } });
   if (!contract) return { error: "ไม่พบสัญญา" };
@@ -156,7 +175,8 @@ export async function issueMoveInBill(formData: FormData) {
     billingMonth,
     dueDateFor(billingMonth, contract.paymentDueDay),
     lineItems,
-    []
+    [],
+    { id: user.id, name: user.name }
   );
 
   revalidatePath("/bills");
@@ -185,14 +205,20 @@ async function recomputeBillStatus(billId: number) {
 }
 
 export async function addPayment(formData: FormData) {
-  const { building } = await requireAccess("finance");
+  const { user, building } = await requireAccess("finance");
   const billId = Number(formData.get("billId"));
-  const bill = await prisma.bill.findFirst({ where: { id: billId, buildingId: building.id } });
+  const bill = await prisma.bill.findFirst({
+    where: { id: billId, buildingId: building.id },
+    include: { lineItems: true, payments: true },
+  });
   if (!bill) return { error: "ไม่พบบิล" };
   if (bill.status === "cancelled") return { error: "บิลนี้ถูกยกเลิกแล้ว" };
 
   const amount = Number(formData.get("amount"));
   if (!amount || amount <= 0) return { error: "กรุณากรอกจำนวนเงิน" };
+  const paidSoFar = bill.payments.reduce((s, p) => s + p.amount, 0);
+  const remaining = billTotal(bill.lineItems, bill.discountAmount) - paidSoFar;
+  if (amount > remaining + 0.01) return { error: `จำนวนเงินเกินยอดค้างชำระ (ค้างชำระ ฿${remaining.toLocaleString()})` };
 
   const method = String(formData.get("method") || "cash");
   const accountId = formData.get("accountId") ? Number(formData.get("accountId")) : null;
@@ -210,7 +236,10 @@ export async function addPayment(formData: FormData) {
   const receiptNo = await generateReceiptNo(building.id);
   const taxInvoiceNo = issueTaxInvoice ? await generateTaxInvoiceNo(building.id) : null;
 
-  await prisma.payment.create({
+  const paidAtRaw = formData.get("paidAt") ? new Date(String(formData.get("paidAt"))) : null;
+  const paidAt = paidAtRaw && !isNaN(paidAtRaw.getTime()) ? paidAtRaw : undefined;
+
+  const payment = await prisma.payment.create({
     data: {
       billId,
       amount,
@@ -226,7 +255,34 @@ export async function addPayment(formData: FormData) {
       payeeNameSnapshot: payee?.payeeName ?? null,
       payeeAddressSnapshot: payee?.payeeAddress ?? null,
       payeeTaxIdSnapshot: payee?.payeeIdCardNo ?? null,
+      ...(paidAt ? { paidAt } : {}),
     },
+  });
+
+  // ledger entry สร้างเฉพาะตอนมี accountId (เช่น โอนเข้าบัญชี) — เงินสดยังไม่บังคับเลือกบัญชีในฟอร์มบิลผู้เช่ารายเดือนปัจจุบัน
+  if (accountId) {
+    await createLedgerEntry({
+      buildingId: building.id,
+      accountId,
+      direction: "in",
+      amount,
+      date: new Date(),
+      sourceType: "bill_payment",
+      sourceId: payment.id,
+      description: `ชำระบิล ${bill.billNo}`,
+    });
+  }
+
+  await logAudit({
+    buildingId: building.id,
+    actorUserId: user.id,
+    actorName: user.name,
+    actionType: "payment",
+    moduleTag: "ใบแจ้งหนี้",
+    entityType: "Payment",
+    entityId: payment.id,
+    entityLabel: bill.billNo,
+    description: `บันทึกชำระเงินใบแจ้งหนี้ ${bill.billNo} ฿${amount.toLocaleString()}`,
   });
 
   await recomputeBillStatus(billId);
@@ -234,19 +290,52 @@ export async function addPayment(formData: FormData) {
   revalidatePath("/bills");
 }
 
+// เปลี่ยนวันที่หัวบิล (issueDate) ได้อิสระ — ไม่แตะ dueDate เพราะคำนวณจาก contract.paymentDueDay ตอนออกบิล ห้ามแก้หลังบิลออก
+export async function updateBillIssueDate(formData: FormData) {
+  const { building } = await requireAccess("finance");
+  const billId = Number(formData.get("billId"));
+  const issueDate = new Date(String(formData.get("issueDate")));
+  if (isNaN(issueDate.getTime())) return { error: "วันที่ไม่ถูกต้อง" };
+
+  const bill = await prisma.bill.findFirst({ where: { id: billId, buildingId: building.id } });
+  if (!bill) return { error: "ไม่พบบิล" };
+
+  await prisma.bill.update({ where: { id: billId }, data: { issueDate } });
+  revalidatePath(`/bills/${billId}`);
+  revalidatePath("/bills");
+}
+
+// เปลี่ยนวันที่ใบเสร็จ (paidAt) ของรายการชำระที่บันทึกไปแล้ว
+export async function updatePaymentDate(formData: FormData) {
+  await requireAccess("finance");
+  const paymentId = Number(formData.get("paymentId"));
+  const paidAt = new Date(String(formData.get("paidAt")));
+  if (isNaN(paidAt.getTime())) return { error: "วันที่ไม่ถูกต้อง" };
+
+  const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+  if (!payment) return { error: "ไม่พบรายการชำระ" };
+
+  await prisma.payment.update({ where: { id: paymentId }, data: { paidAt } });
+  revalidatePath(`/bills/${payment.billId}`);
+  revalidatePath(`/bills/receipts/${paymentId}`);
+}
+
 export async function deletePayment(formData: FormData) {
   await requireAccess("finance");
   const paymentId = Number(formData.get("paymentId"));
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
   if (!payment) return;
-  await prisma.payment.delete({ where: { id: paymentId } });
+  await prisma.$transaction([
+    prisma.ledgerEntry.deleteMany({ where: { sourceType: "bill_payment", sourceId: paymentId } }),
+    prisma.payment.delete({ where: { id: paymentId } }),
+  ]);
   await recomputeBillStatus(payment.billId);
   revalidatePath(`/bills/${payment.billId}`);
   revalidatePath("/bills");
 }
 
 export async function cancelBill(formData: FormData) {
-  const { building } = await requireAccess("finance");
+  const { user, building } = await requireAccess("finance");
   const billId = Number(formData.get("billId"));
   const bill = await prisma.bill.findFirst({ where: { id: billId, buildingId: building.id }, include: { payments: true } });
   if (!bill) return { error: "ไม่พบบิล" };
@@ -258,6 +347,18 @@ export async function cancelBill(formData: FormData) {
     prisma.bill.update({ where: { id: billId }, data: { status: "cancelled" } }),
     prisma.meterReading.updateMany({ where: { billId }, data: { billingStatus: "unbilled", billId: null } }),
   ]);
+
+  await logAudit({
+    buildingId: building.id,
+    actorUserId: user.id,
+    actorName: user.name,
+    actionType: "delete",
+    moduleTag: "ใบแจ้งหนี้",
+    entityType: "Bill",
+    entityId: billId,
+    entityLabel: bill.billNo,
+    description: `ยกเลิกบิล ${bill.billNo}`,
+  });
 
   revalidatePath("/bills");
   revalidatePath(`/bills/${billId}`);

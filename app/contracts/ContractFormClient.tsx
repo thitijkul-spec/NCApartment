@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { createContract, updateContract } from "./actions";
 import type { Contract, ContractClauseTemplate, ContractClauseSelection, Room, Tenant, RoomOccupancy } from "@prisma/client";
 import { PlusIcon, TrashIcon } from "../icons";
@@ -53,6 +53,16 @@ export default function ContractFormClient({
   }
 
   const today = new Date().toISOString().slice(0, 10);
+  const startDateRef = useRef<HTMLInputElement>(null);
+  const endDateRef = useRef<HTMLInputElement>(null);
+
+  function applyDurationMonths(months: number) {
+    const startVal = startDateRef.current?.value;
+    if (!startVal || !months || !endDateRef.current) return;
+    const d = new Date(startVal);
+    d.setMonth(d.getMonth() + months);
+    endDateRef.current.value = d.toISOString().slice(0, 10);
+  }
 
   return (
     <div className="card">
@@ -74,11 +84,39 @@ export default function ContractFormClient({
           </div>
           <div className="field">
             <label>วันเริ่มสัญญา *</label>
-            <input name="startDate" type="date" required defaultValue={contract ? new Date(contract.startDate).toISOString().slice(0, 10) : today} />
+            <input
+              ref={startDateRef}
+              name="startDate"
+              type="date"
+              required
+              defaultValue={
+                contract
+                  ? new Date(contract.startDate).toISOString().slice(0, 10)
+                  : occupancy
+                    ? new Date(occupancy.checkinDate).toISOString().slice(0, 10)
+                    : today
+              }
+            />
+          </div>
+          <div className="field">
+            <label>จำนวนเดือนที่เช่า</label>
+            <input type="number" min={1} placeholder="เช่น 6" onChange={(e) => applyDurationMonths(Number(e.target.value))} />
           </div>
           <div className="field">
             <label>วันสิ้นสุดสัญญา</label>
-            <input name="endDate" type="date" disabled={noEndDate} defaultValue={contract?.endDate ? new Date(contract.endDate).toISOString().slice(0, 10) : ""} />
+            <input
+              ref={endDateRef}
+              name="endDate"
+              type="date"
+              disabled={noEndDate}
+              defaultValue={
+                contract?.endDate
+                  ? new Date(contract.endDate).toISOString().slice(0, 10)
+                  : occupancy?.plannedCheckoutDate
+                    ? new Date(occupancy.plannedCheckoutDate).toISOString().slice(0, 10)
+                    : ""
+              }
+            />
           </div>
         </div>
         <div style={{ display: "flex", gap: 20 }}>

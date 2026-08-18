@@ -12,7 +12,7 @@ export default async function TenantsPage() {
       occupancies: { include: { room: true }, orderBy: { checkinDate: "desc" } },
       contracts: { where: { archivedAt: null } },
     },
-    orderBy: { name: "asc" },
+    orderBy: { createdAt: "desc" },
   });
 
   return <TenantsClient tenants={tenants} buildingName={building.name} />;

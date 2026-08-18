@@ -4,9 +4,11 @@ import { useMemo, useState, useTransition } from "react";
 import type { BookingWithRelations, BookingRoomOption } from "./types";
 import type { TenantOption } from "../rooms/types";
 import type { Account } from "@prisma/client";
-import { confirmBooking, cancelBooking, archiveBooking, addBookingPayment, deleteBookingPayment } from "./actions";
+import { cancelBooking, archiveBooking, addBookingPayment, deleteBookingPayment, confirmBooking, assignBookingRoom } from "./actions";
+import { checkInFromBooking } from "../rooms/checkin-actions";
 import BookingFormModal from "./BookingFormModal";
 import { CalendarIcon, PlusIcon, TrashIcon } from "../icons";
+import { formatNumber } from "@/lib/format";
 
 const STATUS_LABEL: Record<string, string> = {
   pending: "รอยืนยัน",
@@ -23,9 +25,10 @@ const STATUS_BADGE: Record<string, string> = {
   archived: "neutral",
 };
 
+import { formatDateBE } from "@/lib/date-utils";
+
 function fmtDate(d: Date | string | null | undefined) {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" });
+  return formatDateBE(d);
 }
 
 type FilterChip = "all" | "pending" | "confirmed" | "cancelled" | "completed" | "archived";
@@ -66,7 +69,7 @@ export default function BookingsClient({
           !b.bookingCode.toLowerCase().includes(q) &&
           !(b.tenant?.name ?? "").toLowerCase().includes(q) &&
           !(b.tenant?.phone ?? "").includes(q) &&
-          !b.room.roomNumber.toLowerCase().includes(q)
+          !(b.room?.roomNumber ?? "").toLowerCase().includes(q)
         )
           return false;
       }
@@ -134,6 +137,7 @@ export default function BookingsClient({
                 key={b.id}
                 booking={b}
                 accounts={accounts}
+                rooms={rooms}
                 overdue={!!overdue}
                 expanded={expandedId === b.id}
                 onToggleExpand={() => setExpandedId(expandedId === b.id ? null : b.id)}
@@ -147,7 +151,7 @@ export default function BookingsClient({
       {filtered.length === 0 && <p className="empty">ไม่พบรายการจองตามเงื่อนไขนี้</p>}
 
       {showCreate && (
-        <BookingFormModal rooms={rooms} tenants={tenants} onClose={() => setShowCreate(false)} onSaved={notify} />
+        <BookingFormModal rooms={rooms} tenants={tenants} accounts={accounts} onClose={() => setShowCreate(false)} onSaved={notify} />
       )}
       {cancelTarget && (
         <CancelBookingModal booking={cancelTarget} onClose={() => setCancelTarget(null)} onDone={notify} />
@@ -159,6 +163,7 @@ export default function BookingsClient({
 function BookingRow({
   booking,
   accounts,
+  rooms,
   overdue,
   expanded,
   onToggleExpand,
@@ -167,6 +172,7 @@ function BookingRow({
 }: {
   booking: BookingWithRelations;
   accounts: Account[];
+  rooms: BookingRoomOption[];
   overdue: boolean;
   expanded: boolean;
   onToggleExpand: () => void;
@@ -174,16 +180,8 @@ function BookingRow({
   onCancelClick: () => void;
 }) {
   const [pending, startTransition] = useTransition();
+  const [pickRoomId, setPickRoomId] = useState<number | "">("");
   const effectiveStatus = booking.archivedAt ? "archived" : booking.status;
-
-  function doConfirm() {
-    const formData = new FormData();
-    formData.set("bookingId", String(booking.id));
-    startTransition(async () => {
-      await confirmBooking(formData);
-      onNotify("ยืนยันการจองแล้ว");
-    });
-  }
 
   function doArchive() {
     const formData = new FormData();
@@ -194,11 +192,71 @@ function BookingRow({
     });
   }
 
+  function doConfirm() {
+    const formData = new FormData();
+    formData.set("bookingId", String(booking.id));
+    startTransition(async () => {
+      const result = await confirmBooking(formData);
+      if (result?.error) alert(result.error);
+      else onNotify("ยืนยันการจองแล้ว");
+    });
+  }
+
+  function doAssignRoom() {
+    if (!pickRoomId) return;
+    const formData = new FormData();
+    formData.set("bookingId", String(booking.id));
+    formData.set("roomId", String(pickRoomId));
+    startTransition(async () => {
+      const result = await assignBookingRoom(formData);
+      if (result?.error) alert(result.error);
+      else onNotify("บันทึกห้องให้รายการจองแล้ว");
+    });
+  }
+
+  function doCheckIn() {
+    const formData = new FormData();
+    formData.set("bookingId", String(booking.id));
+    startTransition(async () => {
+      const result = await checkInFromBooking(formData);
+      if (result?.error) alert(result.error);
+      else onNotify("เช็คอินเรียบร้อยแล้ว");
+    });
+  }
+
   return (
     <>
       <tr style={{ cursor: "pointer" }} onClick={onToggleExpand}>
         <td>{booking.bookingCode}</td>
-        <td>{booking.room.roomNumber}</td>
+        <td onClick={(e) => e.stopPropagation()}>
+          {booking.room ? (
+            booking.room.roomNumber
+          ) : (
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <select
+                value={pickRoomId}
+                onChange={(e) => setPickRoomId(e.target.value ? Number(e.target.value) : "")}
+                style={{ fontSize: 12, padding: "2px 4px" }}
+              >
+                <option value="">-- เลือกห้อง --</option>
+                {rooms.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.roomNumber}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="secondary"
+                style={{ fontSize: 12, padding: "2px 8px" }}
+                onClick={doAssignRoom}
+                disabled={!pickRoomId || pending}
+              >
+                บันทึก
+              </button>
+            </div>
+          )}
+        </td>
         <td>{booking.tenant?.name ?? "-"}</td>
         <td>{booking.bookingType === "monthly" ? "รายเดือน" : "รายวัน"}</td>
         <td>
@@ -209,7 +267,7 @@ function BookingRow({
             </span>
           )}
         </td>
-        <td>฿{booking.payments.reduce((s, p) => s + p.amount, 0).toLocaleString()}</td>
+        <td>฿{formatNumber(booking.payments.reduce((s, p) => s + p.amount, 0))}</td>
         <td>
           <span className={`badge ${STATUS_BADGE[effectiveStatus]}`}>{STATUS_LABEL[effectiveStatus]}</span>
         </td>
@@ -217,14 +275,14 @@ function BookingRow({
           <div className="status-buttons">
             {booking.status === "pending" && (
               <button className="secondary" onClick={doConfirm} disabled={pending}>
-                ยืนยัน
+                ยืนยันจอง
               </button>
             )}
             {(booking.status === "pending" || booking.status === "confirmed") && (
               <>
-                <a href={`/rooms?openRoom=${booking.roomId}&tab=ผู้เช่า`} className="secondary btn">
+                <button onClick={doCheckIn} disabled={pending}>
                   เช็คอิน
-                </a>
+                </button>
                 <button className="danger" onClick={onCancelClick} disabled={pending}>
                   ยกเลิก
                 </button>
@@ -308,7 +366,7 @@ function BookingPayments({
             <tr key={p.id}>
               <td>{p.method === "cash" ? "เงินสด" : "โอนเงิน"}</td>
               <td>{p.account?.name ?? "-"}</td>
-              <td>฿{p.amount.toLocaleString()}</td>
+              <td>฿{formatNumber(p.amount)}</td>
               {canEdit && (
                 <td>
                   <button className="plain-icon-btn" onClick={() => handleDelete(p.id)} disabled={pending}>

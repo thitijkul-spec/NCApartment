@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { hashPassword, requireUser, MODULES } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 import { revalidatePath } from "next/cache";
 
 function readPermissions(formData: FormData) {
@@ -34,7 +35,7 @@ export async function createStaffUser(formData: FormData) {
   const buildingIds = readBuildingIds(formData);
   const permissions = readPermissions(formData);
 
-  await prisma.user.create({
+  const newUser = await prisma.user.create({
     data: {
       name,
       username,
@@ -44,6 +45,20 @@ export async function createStaffUser(formData: FormData) {
       buildingAccess: { create: buildingIds.map((buildingId) => ({ buildingId })) },
     },
   });
+
+  if (buildingIds[0]) {
+    await logAudit({
+      buildingId: buildingIds[0],
+      actorUserId: owner.id,
+      actorName: owner.name,
+      actionType: "create",
+      moduleTag: "ตั้งค่า",
+      entityType: "User",
+      entityId: newUser.id,
+      entityLabel: newUser.name,
+      description: `เพิ่มผู้ใช้งาน ${newUser.name} (${newUser.username})`,
+    });
+  }
 
   revalidatePath("/settings/users");
 }

@@ -69,7 +69,7 @@ export default function SignatureCanvas({ contractId }: { contractId: number }) 
   return (
     <div className="no-print">
       {error && <div className="form-error">{error}</div>}
-      <p style={{ fontSize: 13, color: "var(--text-muted)" }}>เซ็นชื่อในกรอบด้านล่าง (ใช้นิ้ว/ปากกาบนหน้าจอสัมผัส เช่น iPad)</p>
+      <p style={{ fontSize: 13, color: "var(--text-muted)" }}>ผู้เช่าเซ็นชื่อในกรอบด้านล่าง (ใช้นิ้ว/ปากกาบนหน้าจอสัมผัส เช่น iPad)</p>
       <canvas
         ref={canvasRef}
         width={500}

@@ -4,8 +4,10 @@ import { formatMoneyWithText } from "@/lib/thai-baht-text";
 import { notFound } from "next/navigation";
 import PrintButton from "./PrintButton";
 
+import { formatDateBE } from "@/lib/date-utils";
+
 function fmtDate(d: Date | string) {
-  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "long", day: "numeric" });
+  return formatDateBE(d);
 }
 
 export default async function ReceiptPrintPage({ params }: { params: { paymentId: string } }) {

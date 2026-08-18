@@ -2,8 +2,8 @@
 
 import { prisma } from "@/lib/prisma";
 import { requireAccess } from "@/lib/auth";
-import { saveUploadedFile } from "@/lib/upload";
 import { serializeUtility } from "@/lib/room-utils";
+import { logAudit } from "@/lib/audit";
 import { revalidatePath } from "next/cache";
 
 function readUtilityMetered(formData: FormData, prefix: string) {
@@ -32,7 +32,6 @@ function readRoomCommonFields(formData: FormData) {
     dailyPrice: formData.get("dailyPrice") ? Number(formData.get("dailyPrice")) : null,
     monthlyDeposit: formData.get("monthlyDeposit") ? Number(formData.get("monthlyDeposit")) : null,
     dailyDeposit: formData.get("dailyDeposit") ? Number(formData.get("dailyDeposit")) : null,
-    sizeSqm: formData.get("sizeSqm") ? Number(formData.get("sizeSqm")) : null,
     utilityWater: readUtilityMetered(formData, "water"),
     utilityElectric: readUtilityMetered(formData, "electric"),
     utilityInternet: readUtilityFlat(formData, "internet"),
@@ -41,7 +40,11 @@ function readRoomCommonFields(formData: FormData) {
     extraMonthlyFees: serializeUtility(
       formData
         .getAll("extraFeeName")
-        .map((name, i) => ({ name: String(name), amount: Number(formData.getAll("extraFeeAmount")[i] || 0) }))
+        .map((name, i) => ({
+          name: String(name),
+          amount: Number(formData.getAll("extraFeeAmount")[i] || 0),
+          qty: Number(formData.getAll("extraFeeQty")[i] || 1) || 1,
+        }))
         .filter((f) => f.name)
     ),
     notes: String(formData.get("notes") || "").trim() || null,
@@ -49,40 +52,42 @@ function readRoomCommonFields(formData: FormData) {
 }
 
 export async function createRoom(formData: FormData) {
-  const { building } = await requireAccess("room");
+  const { user, building } = await requireAccess("room");
   const fields = readRoomCommonFields(formData);
   if (!fields.roomNumber) return { error: "กรุณากรอกหมายเลขห้อง" };
   if (!fields.monthlyPrice && !fields.dailyPrice) return { error: "กรุณากรอกราคาอย่างน้อย 1 ประเภท" };
 
+  let room;
   try {
-    const room = await prisma.room.create({
+    room = await prisma.room.create({
       data: {
         buildingId: building.id,
         status: String(formData.get("status") || "available"),
         ...fields,
       },
     });
-
-    const files = formData.getAll("images") as File[];
-    await attachImages(room.id, building.id, files);
   } catch (e: any) {
     if (e?.code === "P2002") return { error: `หมายเลขห้อง "${fields.roomNumber}" มีอยู่แล้วในอาคารนี้` };
     throw e;
   }
 
+  await logAudit({
+    buildingId: building.id,
+    actorUserId: user.id,
+    actorName: user.name,
+    actionType: "create",
+    moduleTag: "ห้องพัก",
+    entityType: "Room",
+    entityId: room.id,
+    entityLabel: room.roomNumber,
+    description: `สร้างห้อง ${room.roomNumber}`,
+  });
+
   revalidatePath("/rooms");
 }
 
-async function attachImages(roomId: number, buildingId: number, files: File[]) {
-  for (const file of files) {
-    if (!file || file.size === 0) continue;
-    const url = await saveUploadedFile(file, "rooms");
-    if (url) await prisma.roomImage.create({ data: { roomId, buildingId, url } });
-  }
-}
-
 export async function updateRoom(formData: FormData) {
-  const { building } = await requireAccess("room");
+  const { user, building } = await requireAccess("room");
   const id = Number(formData.get("roomId"));
   if (!id) return { error: "ไม่พบห้อง" };
 
@@ -93,61 +98,62 @@ export async function updateRoom(formData: FormData) {
   if (!fields.roomNumber) return { error: "กรุณากรอกหมายเลขห้อง" };
   if (!fields.monthlyPrice && !fields.dailyPrice) return { error: "กรุณากรอกราคาอย่างน้อย 1 ประเภท" };
 
-  if (fields.rentalTypeSupport !== existing.rentalTypeSupport && existing.status === "occupied") {
-    const activeOccupancy = await prisma.roomOccupancy.findFirst({
-      where: { roomId: id, status: "active" },
-      include: { tenant: true },
-    });
-    if (activeOccupancy) {
-      const tenantType = activeOccupancy.tenant.tenantType;
-      if (fields.rentalTypeSupport !== "both" && fields.rentalTypeSupport !== tenantType) {
-        return {
-          error: `แก้ไข "ประเภทการรองรับ" ไม่ได้ — ห้องนี้มีผู้เช่าแบบ${
-            tenantType === "monthly" ? "รายเดือน" : "รายวัน"
-          }อยู่ ต้องให้ห้องว่างก่อน`,
-        };
-      }
+  const activeOccupancy = await prisma.roomOccupancy.findFirst({
+    where: { roomId: id, status: "active" },
+    include: { tenant: true },
+  });
+
+  if (fields.rentalTypeSupport !== existing.rentalTypeSupport && existing.status === "occupied" && activeOccupancy) {
+    const tenantType = activeOccupancy.tenant.tenantType;
+    if (fields.rentalTypeSupport !== "both" && fields.rentalTypeSupport !== tenantType) {
+      return {
+        error: `แก้ไข "ประเภทการรองรับ" ไม่ได้ — ห้องนี้มีผู้เช่าแบบ${
+          tenantType === "monthly" ? "รายเดือน" : "รายวัน"
+        }อยู่ ต้องให้ห้องว่างก่อน`,
+      };
     }
+  }
+
+  const requestedStatus = String(formData.get("status") || existing.status);
+  if (activeOccupancy && requestedStatus !== "occupied") {
+    return { error: "แก้ไขสถานะห้องนี้ไม่ได้ — มีผู้เช่ากำลังเข้าพักอยู่ ต้องเช็คเอาท์ก่อน" };
   }
 
   try {
     await prisma.room.update({
       where: { id },
       data: {
-        status: String(formData.get("status") || existing.status),
+        status: requestedStatus,
         maintenanceReason:
-          String(formData.get("status") || existing.status) === "maintenance"
-            ? String(formData.get("maintenanceReason") || "").trim() || null
-            : null,
+          requestedStatus === "maintenance" ? String(formData.get("maintenanceReason") || "").trim() || null : null,
         ...fields,
       },
     });
-
-    const files = formData.getAll("images") as File[];
-    await attachImages(id, building.id, files);
-
-    const coverImageId = formData.get("coverImageId");
-    if (coverImageId) {
-      await prisma.room.update({ where: { id }, data: { coverImageId: Number(coverImageId) } });
-    }
   } catch (e: any) {
     if (e?.code === "P2002") return { error: `หมายเลขห้อง "${fields.roomNumber}" มีอยู่แล้วในอาคารนี้` };
     throw e;
   }
 
-  revalidatePath("/rooms");
-}
+  const newStatus = requestedStatus;
+  if (newStatus !== existing.status) {
+    await logAudit({
+      buildingId: building.id,
+      actorUserId: user.id,
+      actorName: user.name,
+      actionType: "status_change",
+      moduleTag: "ห้องพัก",
+      entityType: "Room",
+      entityId: id,
+      entityLabel: fields.roomNumber,
+      description: `เปลี่ยนสถานะห้อง ${fields.roomNumber} เป็น "${newStatus}"`,
+    });
+  }
 
-export async function deleteRoomImage(formData: FormData) {
-  const { building } = await requireAccess("room");
-  const imageId = Number(formData.get("imageId"));
-  if (!imageId) return;
-  await prisma.roomImage.deleteMany({ where: { id: imageId, buildingId: building.id } });
   revalidatePath("/rooms");
 }
 
 export async function deleteRoom(formData: FormData) {
-  const { building } = await requireAccess("room");
+  const { user, building } = await requireAccess("room");
   const id = Number(formData.get("roomId"));
   const room = await prisma.room.findFirst({ where: { id, buildingId: building.id } });
   if (!room) return { error: "ไม่พบห้อง" };
@@ -155,6 +161,17 @@ export async function deleteRoom(formData: FormData) {
     return { error: `ลบห้อง ${room.roomNumber} ไม่ได้ เนื่องจากห้องมีสถานะ "${room.status === "occupied" ? "มีผู้เช่า" : "จองแล้ว"}"` };
   }
   await prisma.room.delete({ where: { id } });
+  await logAudit({
+    buildingId: building.id,
+    actorUserId: user.id,
+    actorName: user.name,
+    actionType: "delete",
+    moduleTag: "ห้องพัก",
+    entityType: "Room",
+    entityId: id,
+    entityLabel: room.roomNumber,
+    description: `ลบห้อง ${room.roomNumber}`,
+  });
   revalidatePath("/rooms");
 }
 

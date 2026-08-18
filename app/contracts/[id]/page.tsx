@@ -4,11 +4,13 @@ import { renderContractClauses } from "@/lib/contract-render";
 import { formatMoneyWithText } from "@/lib/thai-baht-text";
 import SignatureCanvas from "../SignatureCanvas";
 import ContractActions from "../ContractActions";
+import MoveInBillPrompt from "./MoveInBillPrompt";
 import { notFound } from "next/navigation";
 
+import { formatDateBE } from "@/lib/date-utils";
+
 function fmtDateTh(d: Date | null) {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "long", day: "numeric" });
+  return formatDateBE(d);
 }
 function fmtDateEn(d: Date | null) {
   if (!d) return "-";
@@ -30,6 +32,8 @@ export default async function ContractViewPage({ params }: { params: { id: strin
   });
   if (!contract) notFound();
 
+  const moveInBill = await prisma.bill.findFirst({ where: { contractId: contract.id, billType: "move_in" } });
+
   const clauses = renderContractClauses(contract);
   const additionalRules: string[] = contract.additionalRules ? JSON.parse(contract.additionalRules) : [];
   const witnessNames: string[] = contract.witnessNames ? JSON.parse(contract.witnessNames) : [];
@@ -40,8 +44,19 @@ export default async function ContractViewPage({ params }: { params: { id: strin
         <a href="/contracts" className="secondary btn">
           ← กลับรายการสัญญา
         </a>
-        <ContractActions contractId={contract.id} signed={!!contract.signedAt} />
+        <ContractActions
+          contractId={contract.id}
+          signed={!!contract.signedAt}
+          roomNumber={contract.room.roomNumber}
+          tenantName={contract.tenant.name}
+        />
       </div>
+
+      {!moveInBill && (
+        <div style={{ maxWidth: 780, margin: "0 auto 16px" }}>
+          <MoveInBillPrompt contractId={contract.id} />
+        </div>
+      )}
 
       <div className="card" style={{ maxWidth: 780, margin: "0 auto", fontFamily: "inherit" }}>
         {contract.headerTextSnapshot && <p style={{ textAlign: "center", fontWeight: 600 }}>{contract.headerTextSnapshot}</p>}
@@ -131,15 +146,17 @@ export default async function ContractViewPage({ params }: { params: { id: strin
         <div style={{ marginTop: 32, display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
           <div style={{ textAlign: "center" }}>
             <div style={{ borderBottom: "1px solid var(--text)", width: 220, height: 60, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
-              {contract.signedAt && <img src={contract.ownerSignatureImage ?? ""} alt="ลายเซ็น" style={{ maxHeight: 55 }} />}
+              {contract.ownerSignatureImage && <img src={contract.ownerSignatureImage} alt="ลายเซ็นผู้ให้เช่า" style={{ maxHeight: 55 }} />}
             </div>
-            <p style={{ fontSize: 13, marginTop: 6 }}>
-              ผู้ให้เช่า {contract.signedAt && `(เซ็นเมื่อ ${fmtDateTh(contract.signedAt)})`}
-            </p>
+            <p style={{ fontSize: 13, marginTop: 6 }}>ผู้ให้เช่า</p>
           </div>
           <div style={{ textAlign: "center" }}>
-            <div style={{ borderBottom: "1px solid var(--text)", width: 220, height: 60 }} />
-            <p style={{ fontSize: 13, marginTop: 6 }}>ผู้เช่า</p>
+            <div style={{ borderBottom: "1px solid var(--text)", width: 220, height: 60, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+              {contract.signedAt && <img src={contract.tenantSignatureImage ?? ""} alt="ลายเซ็นผู้เช่า" style={{ maxHeight: 55 }} />}
+            </div>
+            <p style={{ fontSize: 13, marginTop: 6 }}>
+              ผู้เช่า {contract.signedAt && `(เซ็นเมื่อ ${fmtDateTh(contract.signedAt)})`}
+            </p>
           </div>
         </div>
 

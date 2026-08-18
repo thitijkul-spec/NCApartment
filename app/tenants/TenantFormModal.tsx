@@ -79,12 +79,6 @@ export default function TenantFormModal({
               </div>
             )}
 
-            <div className="field">
-              <label>รูปบัตรประชาชน (JPG/PNG ≤10MB)</label>
-              <input name="idCardImage" type="file" accept="image/*" />
-              {tenant?.idCardImageUrl && <img src={tenant.idCardImageUrl} alt="" style={{ height: 60, marginTop: 8, borderRadius: 8 }} />}
-            </div>
-
             <div className="form-row">
               <div className="field" style={{ flex: 2 }}>
                 <label>ชื่อ-นามสกุล *</label>
@@ -93,13 +87,6 @@ export default function TenantFormModal({
               <div className="field">
                 <label>เบอร์โทรศัพท์</label>
                 <input name="phone" defaultValue={tenant?.phone ?? ""} />
-              </div>
-              <div className="field">
-                <label>ประเภทผู้เช่า</label>
-                <select name="tenantType" defaultValue={tenant?.tenantType ?? "monthly"}>
-                  <option value="monthly">รายเดือน</option>
-                  <option value="daily">รายวัน</option>
-                </select>
               </div>
             </div>
 
@@ -119,10 +106,6 @@ export default function TenantFormModal({
               <div className="field">
                 <label>LINE ID</label>
                 <input name="lineId" defaultValue={tenant?.lineId ?? ""} />
-              </div>
-              <div className="field">
-                <label>เลขบัตรประชาชน</label>
-                <input name="idCardNo" defaultValue={tenant?.idCardNo ?? ""} />
               </div>
             </div>
 
@@ -185,6 +168,18 @@ export default function TenantFormModal({
               <button type="button" className="secondary" style={{ marginTop: 6 }} onClick={() => setVehicles((p) => [...p, { plateNo: "", brandModel: "", color: "" }])}>
                 <PlusIcon size={14} /> เพิ่มยานพาหนะ
               </button>
+            </div>
+
+            <div className="form-row" style={{ marginTop: 12 }}>
+              <div className="field">
+                <label>เลขบัตรประชาชน</label>
+                <input name="idCardNo" defaultValue={tenant?.idCardNo ?? ""} />
+              </div>
+              <div className="field">
+                <label>รูปบัตรประชาชน (JPG/PNG ≤10MB)</label>
+                <input name="idCardImage" type="file" accept="image/*" />
+                {tenant?.idCardImageUrl && <img src={tenant.idCardImageUrl} alt="" style={{ height: 60, marginTop: 8, borderRadius: 8 }} />}
+              </div>
             </div>
           </div>
           <div className="modal-footer">

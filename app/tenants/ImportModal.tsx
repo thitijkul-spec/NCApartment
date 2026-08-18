@@ -21,6 +21,21 @@ export default function ImportModal({ onClose, onSaved }: { onClose: () => void;
     });
   }
 
+  function handleDownloadTemplate() {
+    const header = "ชื่อ,เบอร์โทร,เลขบัตร,ประเภท(monthly/daily),เลขห้อง,วันเข้าพัก(YYYY-MM-DD),เงินมัดจำ";
+    const example = "สมชาย ใจดี,0812345678,1234567890123,monthly,101,2026-08-18,3000";
+    const csv = "﻿" + header + "\r\n" + example + "\r\n";
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "tenant_import_template.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -37,6 +52,9 @@ export default function ImportModal({ onClose, onSaved }: { onClose: () => void;
             <br />
             ถ้าเลขห้องระบุห้องที่มีผู้เช่าอยู่แล้ว แถวนั้นจะถูกข้าม ส่วนแถวอื่นนำเข้าตามปกติ
           </p>
+          <button type="button" className="secondary" onClick={handleDownloadTemplate} style={{ marginBottom: 16 }}>
+            ดาวน์โหลด Template
+          </button>
           <form action={handleSubmit}>
             <input name="file" type="file" accept=".csv" required />
             <div style={{ marginTop: 16 }}>

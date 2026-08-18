@@ -2,13 +2,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import type { Account } from "@prisma/client";
 import type { RoomWithRelations, TenantOption, BuildingSettings } from "./types";
-import { ROOM_STATUS_LABEL, ROOM_STATUS_BADGE_CLASS, rentalTypeLabel } from "@/lib/room-utils";
+import { ROOM_STATUS_LABEL, ROOM_STATUS_BADGE_CLASS, rentalTypeLabel, roomHasOverdueBill, roomBillingColor } from "@/lib/room-utils";
+import { formatNumber } from "@/lib/format";
 import RoomFormModal from "./RoomFormModal";
 import RoomDetailModal from "./RoomDetailModal";
 import BulkCreateModal from "./BulkCreateModal";
 import BulkEditModal from "./BulkEditModal";
-import { DoorIcon, GridIcon, ListIcon, CheckSquareIcon, PlusIcon, PersonIcon } from "../icons";
+import QuickCheckInModal from "./QuickCheckInModal";
+import { DailyBillModal } from "../accounting/AccountingClient";
+import { DoorIcon, GridIcon, ListIcon, CheckSquareIcon, PlusIcon, PersonIcon, ZapIcon, WalletIcon } from "../icons";
 
 type FilterTab = "all" | "monthly" | "daily" | "available" | "occupied" | "maintenance";
 
@@ -21,21 +25,26 @@ const FILTER_LABELS: Record<FilterTab, string> = {
   maintenance: "ปิดปรับปรุง",
 };
 
+import { formatDateBE } from "@/lib/date-utils";
+
 function fmtDate(d: Date | string | null | undefined) {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" });
+  return formatDateBE(d);
 }
 
 export default function RoomsClient({
   rooms,
   settings,
   tenants,
+  accounts,
   buildingName,
+  canPay,
 }: {
   rooms: RoomWithRelations[];
   settings: BuildingSettings | null;
   tenants: TenantOption[];
+  accounts: Account[];
   buildingName: string;
+  canPay: boolean;
 }) {
   const [view, setView] = useState<"grid" | "list">("grid");
   const [filter, setFilter] = useState<FilterTab>("all");
@@ -47,6 +56,8 @@ export default function RoomsClient({
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [editingRoom, setEditingRoom] = useState<RoomWithRelations | null>(null);
   const [detailRoom, setDetailRoom] = useState<RoomWithRelations | null>(null);
+  const [quickCheckInRoom, setQuickCheckInRoom] = useState<RoomWithRelations | null>(null);
+  const [payRoom, setPayRoom] = useState<RoomWithRelations | null>(null);
   const [detailInitialTab, setDetailInitialTab] = useState<"ข้อมูลห้อง" | "ผู้เช่า">("ข้อมูลห้อง");
   const [toast, setToast] = useState<string | null>(null);
 
@@ -113,6 +124,9 @@ export default function RoomsClient({
   }
 
   const selectedRooms = rooms.filter((r) => selected.has(r.id));
+
+  const currentPayRoom = payRoom ? rooms.find((r) => r.id === payRoom.id) ?? payRoom : null;
+  const payOccupancy = currentPayRoom?.occupancies.find((o) => o.status === "active");
 
   return (
     <div>
@@ -232,8 +246,11 @@ export default function RoomsClient({
                     room={room}
                     multiSelect={multiSelect}
                     selected={selected.has(room.id)}
+                    canPay={canPay}
                     onToggleSelect={() => toggleSelect(room.id)}
                     onOpen={() => setDetailRoom(room)}
+                    onQuickCheckIn={() => setQuickCheckInRoom(room)}
+                    onPay={() => setPayRoom(room)}
                   />
                 ))}
               </div>
@@ -254,6 +271,7 @@ export default function RoomsClient({
                 <tbody>
                   {floorRooms.map((room) => {
                     const occ = room.occupancies.find((o) => o.status === "active");
+                    const overdue = occ?.tenant.tenantType === "monthly" && roomHasOverdueBill(room.bills);
                     return (
                       <tr key={room.id} style={{ cursor: "pointer" }} onClick={() => (multiSelect ? toggleSelect(room.id) : setDetailRoom(room))}>
                         {multiSelect && (
@@ -266,10 +284,11 @@ export default function RoomsClient({
                         <td>{rentalTypeLabel(room.rentalTypeSupport)}</td>
                         <td>
                           <span className={`badge ${ROOM_STATUS_BADGE_CLASS[room.status]}`}>{ROOM_STATUS_LABEL[room.status]}</span>
+                          {overdue && <span className="badge danger" style={{ marginLeft: 4 }}>ค้างชำระเกินกำหนด</span>}
                         </td>
                         <td>{occ?.tenant.name ?? "-"}</td>
-                        <td>{room.monthlyPrice ?? "-"}</td>
-                        <td>{room.dailyPrice ?? "-"}</td>
+                        <td>{formatNumber(room.monthlyPrice)}</td>
+                        <td>{formatNumber(room.dailyPrice)}</td>
                       </tr>
                     );
                   })}
@@ -304,6 +323,31 @@ export default function RoomsClient({
           }}
         />
       )}
+      {quickCheckInRoom && (
+        <QuickCheckInModal
+          room={rooms.find((r) => r.id === quickCheckInRoom.id) ?? quickCheckInRoom}
+          tenants={tenants}
+          onClose={() => setQuickCheckInRoom(null)}
+          onDone={notify}
+        />
+      )}
+      {currentPayRoom && payOccupancy && (
+        <DailyBillModal
+          rooms={[currentPayRoom]}
+          tenants={[payOccupancy.tenant]}
+          accounts={accounts}
+          prefill={{
+            roomId: currentPayRoom.id,
+            tenantId: payOccupancy.tenant.id,
+            checkinDate: new Date(payOccupancy.checkinDate).toISOString().slice(0, 10),
+          }}
+          onClose={() => setPayRoom(null)}
+          onSaved={(msg) => {
+            notify(msg);
+            setPayRoom(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -312,31 +356,53 @@ function RoomCard({
   room,
   multiSelect,
   selected,
+  canPay,
   onToggleSelect,
   onOpen,
+  onQuickCheckIn,
+  onPay,
 }: {
   room: RoomWithRelations;
   multiSelect: boolean;
   selected: boolean;
+  canPay: boolean;
   onToggleSelect: () => void;
   onOpen: () => void;
+  onQuickCheckIn: () => void;
+  onPay: () => void;
 }) {
   const occ = room.occupancies.find((o) => o.status === "active");
   const booking = room.bookings.find((b) => b.status === "pending" || b.status === "confirmed");
   const contract = room.contracts[0];
-  const cover = room.images.find((i) => i.id === room.coverImageId) ?? room.images[0];
 
   const expiryWarning =
     contract?.endDate && !contract.noEndDate
       ? (new Date(contract.endDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24) <= 60
       : false;
 
+  const supportsDaily = room.rentalTypeSupport === "daily" || room.rentalTypeSupport === "both";
+  const canQuickCheckIn = room.status === "available" && !occ && !booking && supportsDaily;
+  const overdue = occ?.tenant.tenantType === "monthly" && roomHasOverdueBill(room.bills);
+
+  const billingColor = roomBillingColor(room);
+  const isDailyOcc = occ?.tenant.tenantType === "daily";
+  const matchedDailyBill = isDailyOcc
+    ? room.dailyBills.filter((db) => db.tenantId === occ!.tenant.id).sort((a, b) => new Date(b.checkinDate).getTime() - new Date(a.checkinDate).getTime())[0]
+    : undefined;
+  const dailyCheckoutDate = matchedDailyBill
+    ? new Date(new Date(matchedDailyBill.checkinDate).getTime() + matchedDailyBill.nights * 24 * 60 * 60 * 1000)
+    : null;
+  const daysSoFar = occ ? Math.max(0, Math.floor((Date.now() - new Date(occ.checkinDate).getTime()) / (24 * 60 * 60 * 1000))) : 0;
+
   return (
-    <div className={`room-card${selected ? " selected" : ""}`} onClick={() => (multiSelect ? onToggleSelect() : onOpen())} style={{ cursor: "pointer" }}>
+    <div
+      className={`room-card${billingColor !== "neutral" ? ` room-card-billing ${billingColor}` : ""}${selected ? " selected" : ""}`}
+      onClick={() => (multiSelect ? onToggleSelect() : onOpen())}
+      style={{ cursor: "pointer" }}
+    >
       {multiSelect && (
         <input type="checkbox" className="room-card-checkbox" checked={selected} onChange={onToggleSelect} onClick={(e) => e.stopPropagation()} />
       )}
-      {cover && <img src={cover.url} alt="" style={{ width: "100%", height: 100, objectFit: "cover", borderRadius: 10 }} />}
       <div className="room-card-top">
         <div>
           <div className="room-card-number">{room.roomNumber}</div>
@@ -345,21 +411,26 @@ function RoomCard({
         <span className={`status-dot ${room.status}`} title={ROOM_STATUS_LABEL[room.status]} />
       </div>
 
-      <span className={`badge ${ROOM_STATUS_BADGE_CLASS[room.status]}`}>
-        {ROOM_STATUS_LABEL[room.status]}
-        {room.status === "occupied" && occ && ` (${occ.tenant.tenantType === "monthly" ? "รายเดือน" : "รายวัน"})`}
-      </span>
-      <span className="price-tag">{rentalTypeLabel(room.rentalTypeSupport)}</span>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <span className={`badge ${ROOM_STATUS_BADGE_CLASS[room.status]}`}>
+          {ROOM_STATUS_LABEL[room.status]}
+          {room.status === "occupied" && occ && ` (${occ.tenant.tenantType === "monthly" ? "รายเดือน" : "รายวัน"})`}
+        </span>
+        {overdue && <span className="badge danger">ค้างชำระเกินกำหนด</span>}
+        {isDailyOcc && !matchedDailyBill && <span className="badge danger">รายวันยังไม่ชำระ</span>}
+      </div>
 
       <div className="room-card-prices">
         {room.monthlyPrice && (
           <div className="room-card-price-row">
-            <span>รายเดือน</span> <span>฿{room.monthlyPrice.toLocaleString()}</span>
+            <span>฿{room.monthlyPrice.toLocaleString()}/เดือน</span>
+            <span className="rental-tag monthly">รายเดือน</span>
           </div>
         )}
         {room.dailyPrice && (
           <div className="room-card-price-row">
-            <span>รายวัน</span> <span>฿{room.dailyPrice.toLocaleString()}</span>
+            <span>฿{room.dailyPrice.toLocaleString()}/วัน</span>
+            <span className="rental-tag daily">รายวัน</span>
           </div>
         )}
       </div>
@@ -367,6 +438,12 @@ function RoomCard({
       {occ && (
         <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
           <PersonIcon size={14} /> {occ.tenant.name} · เข้าพัก {fmtDate(occ.checkinDate)}
+          {isDailyOcc && (
+            <>
+              {" "}
+              · ออก {dailyCheckoutDate ? fmtDate(dailyCheckoutDate) : "-"} · อยู่แล้ว {daysSoFar} วัน
+            </>
+          )}
           {expiryWarning && <div style={{ color: "var(--warning)" }}>⚠ ใกล้หมดสัญญา {fmtDate(contract?.endDate)}</div>}
         </div>
       )}
@@ -375,14 +452,26 @@ function RoomCard({
           {booking.tenant?.name ?? "-"} · เข้าพัก {fmtDate(booking.checkinDate)}
         </div>
       )}
-      {!occ && !booking && room.status === "available" && (
+      {canQuickCheckIn && (
         <button
+          className="room-card-quick-checkin"
           onClick={(e) => {
             e.stopPropagation();
-            onOpen();
+            onQuickCheckIn();
           }}
         >
-          Check-in
+          <ZapIcon size={14} /> Check-in รายวัน
+        </button>
+      )}
+      {isDailyOcc && !matchedDailyBill && canPay && (
+        <button
+          className="room-card-pay-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onPay();
+          }}
+        >
+          <WalletIcon size={14} /> ชำระเงิน
         </button>
       )}
     </div>

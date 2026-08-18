@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import type { RoomWithRelations, TenantOption } from "./types";
 import { deleteRoom } from "./actions";
-import { checkoutTenant, cancelBookingFromRoom } from "./checkin-actions";
+import { checkoutTenant, cancelBookingFromRoom, checkInFromBooking, undoCheckIn } from "./checkin-actions";
 import CheckInForm from "./CheckInForm";
 import {
   ROOM_STATUS_LABEL,
@@ -17,9 +17,11 @@ import { XIcon, PersonIcon, CalendarIcon, GaugeIcon, WrenchIcon, WalletIcon, Doo
 
 const TABS = ["ข้อมูลห้อง", "ผู้เช่า", "สัญญา", "มิเตอร์", "แจ้งซ่อม", "การชำระ"] as const;
 
+import { formatDateBE } from "@/lib/date-utils";
+import { formatNumber } from "@/lib/format";
+
 function fmtDate(d: Date | string | null | undefined) {
-  if (!d) return "-";
-  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" });
+  return formatDateBE(d);
 }
 
 function billBalance(bill: RoomWithRelations["bills"][number]) {
@@ -48,6 +50,7 @@ export default function RoomDetailModal({
   const [error, setError] = useState<string | null>(null);
   const [showCheckIn, setShowCheckIn] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
+  const [justCheckedInOccupancyId, setJustCheckedInOccupancyId] = useState<number | null>(null);
 
   const activeOccupancy = room.occupancies.find((o) => o.status === "active");
   const activeBooking = room.bookings.find((b) => b.status === "pending" || b.status === "confirmed");
@@ -77,7 +80,7 @@ export default function RoomDetailModal({
               <span className={`badge ${ROOM_STATUS_BADGE_CLASS[room.status]}`}>{ROOM_STATUS_LABEL[room.status]}</span>
             </h2>
             <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>
-              ชั้น {room.floor} · ฿{room.monthlyPrice ?? "-"}/เดือน · ฿{room.dailyPrice ?? "-"}/วัน
+              ชั้น {room.floor} · ฿{formatNumber(room.monthlyPrice)}/เดือน · ฿{formatNumber(room.dailyPrice)}/วัน
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -107,7 +110,19 @@ export default function RoomDetailModal({
 
           {tab === "ผู้เช่า" && (
             <div>
-              {activeOccupancy ? (
+              {activeOccupancy && justCheckedInOccupancyId === activeOccupancy.id ? (
+                <div className="card" style={{ marginBottom: 0 }}>
+                  <p>เพิ่มผู้เช่าและเช็คอินเรียบร้อยแล้ว ต้องการสร้างสัญญาเช่าต่อเลยหรือไม่?</p>
+                  <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                    <button type="button" className="secondary" onClick={() => setJustCheckedInOccupancyId(null)}>
+                      ทำทีหลัง
+                    </button>
+                    <a href={`/contracts/new?occupancyId=${activeOccupancy.id}`} className="btn">
+                      สร้างสัญญาต่อเลย
+                    </a>
+                  </div>
+                </div>
+              ) : activeOccupancy ? (
                 <div className="card" style={{ marginBottom: 0 }}>
                   <h2>
                     <PersonIcon size={16} /> {activeOccupancy.tenant.name}
@@ -117,11 +132,16 @@ export default function RoomDetailModal({
                     {activeOccupancy.tenant.tenantType === "monthly" ? "รายเดือน" : "รายวัน"}
                     {activeOccupancy.plannedCheckoutDate && ` · สิ้นสุด ${fmtDate(activeOccupancy.plannedCheckoutDate)}`}
                   </p>
-                  <p style={{ fontSize: 14 }}>เงินมัดจำ: ฿{activeOccupancy.depositAmount ?? 0}</p>
+                  <p style={{ fontSize: 14 }}>เงินมัดจำ: ฿{formatNumber(activeOccupancy.depositAmount ?? 0)}</p>
                   {!showCheckout ? (
-                    <button className="secondary" onClick={() => setShowCheckout(true)}>
-                      เช็คเอาท์
-                    </button>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button className="secondary" onClick={() => setShowCheckout(true)}>
+                        เช็คเอาท์
+                      </button>
+                      {!room.contracts.some((c) => c.occupancyId === activeOccupancy.id) && (
+                        <UndoCheckInButton occupancyId={activeOccupancy.id} onDone={onChanged} />
+                      )}
+                    </div>
                   ) : (
                     <CheckoutForm
                       occupancyId={activeOccupancy.id}
@@ -141,23 +161,10 @@ export default function RoomDetailModal({
                   <p style={{ fontSize: 14, color: "var(--text-muted)" }}>
                     วันเข้าพัก {fmtDate(activeBooking.checkinDate)} · รหัสจอง {activeBooking.bookingCode}
                   </p>
-                  {!showCheckIn ? (
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button onClick={() => setShowCheckIn(true)}>เช็คอิน</button>
-                      <CancelBookingButton bookingId={activeBooking.id} onDone={onChanged} />
-                    </div>
-                  ) : (
-                    <CheckInForm
-                      room={room}
-                      tenants={tenants}
-                      prefillBooking={activeBooking}
-                      onDone={(msg) => {
-                        onChanged(msg);
-                        setShowCheckIn(false);
-                      }}
-                      onCancel={() => setShowCheckIn(false)}
-                    />
-                  )}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <CheckInFromBookingButton bookingId={activeBooking.id} onDone={onChanged} />
+                    <CancelBookingButton bookingId={activeBooking.id} onDone={onChanged} />
+                  </div>
                 </div>
               ) : (
                 <div>
@@ -171,9 +178,10 @@ export default function RoomDetailModal({
                     <CheckInForm
                       room={room}
                       tenants={tenants}
-                      onDone={(msg) => {
+                      onDone={(msg, occupancyId) => {
                         onChanged(msg);
                         setShowCheckIn(false);
+                        if (occupancyId) setJustCheckedInOccupancyId(occupancyId);
                       }}
                       onCancel={() => setShowCheckIn(false)}
                     />
@@ -190,7 +198,7 @@ export default function RoomDetailModal({
                 <div key={c.id} className="card" style={{ marginBottom: 12 }}>
                   <strong>{c.tenant.name}</strong>
                   <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                    {fmtDate(c.startDate)} — {c.noEndDate ? "ไม่มีกำหนด" : fmtDate(c.endDate)} · ฿{c.rentAmount}/เดือน ·{" "}
+                    {fmtDate(c.startDate)} — {c.noEndDate ? "ไม่มีกำหนด" : fmtDate(c.endDate)} · ฿{formatNumber(c.rentAmount)}/เดือน ·{" "}
                     {c.signedAt ? "เซ็นแล้ว" : "ยังไม่เซ็น"}
                   </p>
                   <a href={`/contracts/${c.id}`} className="secondary btn">
@@ -336,15 +344,9 @@ function RoomInfoTab({ room }: { room: RoomWithRelations }) {
           </div>
         </div>
         <div className="stat-card">
-          <div className="label">ขนาดห้อง</div>
-          <div className="value" style={{ fontSize: 18 }}>
-            {room.sizeSqm ? `${room.sizeSqm} ตร.ม.` : "-"}
-          </div>
-        </div>
-        <div className="stat-card">
           <div className="label">มัดจำ</div>
           <div className="value" style={{ fontSize: 18 }}>
-            ฿{room.monthlyDeposit ?? "-"} / ฿{room.dailyDeposit ?? "-"}
+            ฿{formatNumber(room.monthlyDeposit)} / ฿{formatNumber(room.dailyDeposit)}
           </div>
         </div>
       </div>
@@ -379,17 +381,6 @@ function RoomInfoTab({ room }: { room: RoomWithRelations }) {
               <span key={a} className="tab">
                 {a}
               </span>
-            ))}
-          </div>
-        </>
-      )}
-
-      {room.images.length > 0 && (
-        <>
-          <h2 style={{ fontSize: 15, marginTop: 16 }}>รูปห้อง</h2>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-            {room.images.map((img) => (
-              <img key={img.id} src={img.url} alt="" style={{ width: 100, height: 100, objectFit: "cover", borderRadius: 8 }} />
             ))}
           </div>
         </>
@@ -441,22 +432,86 @@ function CheckoutForm({ occupancyId, onDone, onCancel }: { occupancyId: number; 
   );
 }
 
-function CancelBookingButton({ bookingId, onDone }: { bookingId: number; onDone: (msg: string) => void }) {
+function UndoCheckInButton({ occupancyId, onDone }: { occupancyId: number; onDone: (msg: string) => void }) {
   const [pending, startTransition] = useTransition();
   function handleClick() {
-    const reason = prompt("เหตุผลการยกเลิก (ถ้ามี)") ?? "";
+    if (!confirm("ยกเลิกการเช็คอินนี้? (ใช้เมื่อกดเช็คอินผิดห้อง/ผิดคน)")) return;
+    const formData = new FormData();
+    formData.set("occupancyId", String(occupancyId));
+    startTransition(async () => {
+      const result = await undoCheckIn(formData);
+      if (result?.error) alert(result.error);
+      else onDone("ยกเลิกการเช็คอินแล้ว");
+    });
+  }
+  return (
+    <button type="button" className="danger" onClick={handleClick} disabled={pending}>
+      ยกเลิกเช็คอิน (เช็คอินผิด)
+    </button>
+  );
+}
+
+function CheckInFromBookingButton({ bookingId, onDone }: { bookingId: number; onDone: (msg: string) => void }) {
+  const [pending, startTransition] = useTransition();
+  function handleClick() {
+    const formData = new FormData();
+    formData.set("bookingId", String(bookingId));
+    startTransition(async () => {
+      const result = await checkInFromBooking(formData);
+      if (result?.error) alert(result.error);
+      else onDone("เช็คอินเรียบร้อยแล้ว");
+    });
+  }
+  return (
+    <button type="button" onClick={handleClick} disabled={pending}>
+      {pending ? "กำลังเช็คอิน..." : "เช็คอิน"}
+    </button>
+  );
+}
+
+function CancelBookingButton({ bookingId, onDone }: { bookingId: number; onDone: (msg: string) => void }) {
+  const [pending, startTransition] = useTransition();
+  const [showForm, setShowForm] = useState(false);
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  function handleSubmit() {
+    setError(null);
     const formData = new FormData();
     formData.set("bookingId", String(bookingId));
     formData.set("cancelReason", reason);
     startTransition(async () => {
       const result = await cancelBookingFromRoom(formData);
-      if (result?.error) alert(result.error);
+      if (result?.error) setError(result.error);
       else onDone("ยกเลิกการจองแล้ว");
     });
   }
+
+  if (!showForm) {
+    return (
+      <button type="button" className="secondary" onClick={() => setShowForm(true)}>
+        ยกเลิกการจอง
+      </button>
+    );
+  }
+
   return (
-    <button type="button" className="secondary" onClick={handleClick} disabled={pending}>
-      ยกเลิกการจอง
-    </button>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 240 }}>
+      {error && <div className="form-error">{error}</div>}
+      <input
+        placeholder="เหตุผลการยกเลิก (ถ้ามี)"
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        autoFocus
+      />
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="button" className="secondary" onClick={() => setShowForm(false)}>
+          ปิด
+        </button>
+        <button type="button" className="danger" onClick={handleSubmit} disabled={pending}>
+          {pending ? "กำลังยกเลิก..." : "ยืนยันยกเลิกการจอง"}
+        </button>
+      </div>
+    </div>
   );
 }

@@ -2,7 +2,7 @@ import type { Booking, BookingPayment, Room, Tenant, Account } from "@prisma/cli
 import type { CheckInRoomLike } from "../rooms/CheckInForm";
 
 export type BookingWithRelations = Booking & {
-  room: Room;
+  room: Room | null;
   tenant: Tenant | null;
   payments: (BookingPayment & { account: Account | null })[];
 };

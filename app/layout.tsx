@@ -6,11 +6,17 @@ import SidebarNav from "./SidebarNav";
 import {
   BuildingIcon,
   CalendarIcon,
+  DashboardIcon,
   DoorIcon,
   GaugeIcon,
+  HistoryIcon,
   LogoutIcon,
+  PackageIcon,
   PersonIcon,
+  ReportIcon,
   SettingsIcon,
+  TrendUpIcon,
+  UsersIcon,
   WalletIcon,
   WrenchIcon,
 } from "./icons";
@@ -31,6 +37,7 @@ type NavGroup = {
 type NavEntry = ({ kind: "link" } & NavLink) | ({ kind: "group" } & NavGroup);
 
 const navEntries: NavEntry[] = [
+  { kind: "link", href: "/", label: "ภาพรวม", module: "dashboard", icon: <DashboardIcon /> },
   {
     kind: "group",
     label: "ห้องพัก",
@@ -50,8 +57,27 @@ const navEntries: NavEntry[] = [
       { href: "/contracts", label: "เอกสารสัญญา", module: "tenant", icon: <CalendarIcon /> },
     ],
   },
-  { kind: "link", href: "/bills", label: "การเงิน", module: "finance", icon: <WalletIcon /> },
-  { kind: "link", href: "/repairs", label: "แจ้งซ่อม", module: "maintenance", icon: <WrenchIcon /> },
+  {
+    kind: "group",
+    label: "การเงิน",
+    icon: <WalletIcon />,
+    items: [
+      { href: "/bills", label: "บิล/ใบเสร็จ", module: "finance", icon: <WalletIcon /> },
+      { href: "/expenses", label: "ค่าใช้จ่าย", module: "finance", icon: <WalletIcon /> },
+      { href: "/other-income", label: "รายได้อื่นๆ", module: "finance", icon: <TrendUpIcon /> },
+      { href: "/accounting", label: "ฐานข้อมูลบัญชี", module: "finance", icon: <WalletIcon /> },
+      { href: "/contacts", label: "ผู้ซื้อและผู้ขาย", module: "finance", icon: <UsersIcon /> },
+    ],
+  },
+  {
+    kind: "group",
+    label: "ซ่อมบำรุง/พัสดุ",
+    icon: <WrenchIcon />,
+    items: [
+      { href: "/repairs", label: "แจ้งซ่อม", module: "maintenance", icon: <WrenchIcon /> },
+      { href: "/parcels", label: "พัสดุ", module: "maintenance", icon: <PackageIcon /> },
+    ],
+  },
   {
     kind: "group",
     label: "ตั้งค่า",
@@ -61,13 +87,16 @@ const navEntries: NavEntry[] = [
       { href: "/settings/building", label: "ค่าตั้งอาคาร", module: "setting", icon: <BuildingIcon /> },
       { href: "/settings/payee", label: "ข้อมูลผู้รับเงิน", module: "setting", icon: <WalletIcon /> },
       { href: "/settings/contract-clauses", label: "ข้อสัญญา", module: "setting", icon: <CalendarIcon /> },
-      { href: "/settings/accounts", label: "บัญชีธนาคาร/เงินสด", module: "setting", icon: <WalletIcon /> },
     ],
   },
+  { kind: "link", href: "/reports", label: "รายงาน", module: "report", icon: <ReportIcon /> },
+  { kind: "link", href: "/audit", label: "ประวัติการใช้งาน", module: "owner", icon: <HistoryIcon /> },
 ];
 
 function canSee(user: any, moduleCode: string) {
   if (!user) return false;
+  if (moduleCode === "owner") return user.role === "owner";
+  if (moduleCode === "dashboard") return true;
   return hasModuleAccess(user, moduleCode);
 }
 

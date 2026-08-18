@@ -1,9 +1,11 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { checkInTenant } from "./checkin-actions";
 import type { TenantOption } from "./types";
 import { PlusIcon, TrashIcon } from "../icons";
+import { ROOM_STATUS_LABEL } from "@/lib/room-utils";
+import { formatNumber } from "@/lib/format";
 
 export type CheckInRoomLike = {
   id: number;
@@ -15,19 +17,25 @@ export type CheckInRoomLike = {
   dailyDeposit: number | null;
 };
 
+export type CheckInRoomOption = CheckInRoomLike & { floor: number; status: string };
+
 export default function CheckInForm({
   room,
+  roomOptions,
   tenants,
   prefillBooking,
   forceReservation = false,
+  defaultTenantType,
   onDone,
   onCancel,
 }: {
-  room: CheckInRoomLike;
+  room?: CheckInRoomLike;
+  roomOptions?: CheckInRoomOption[];
   tenants: TenantOption[];
   prefillBooking?: { id: number; tenantId: number | null; bookingType: string; checkinDate: Date | string };
   forceReservation?: boolean;
-  onDone: (msg: string) => void;
+  defaultTenantType?: string;
+  onDone: (msg: string, occupancyId?: number) => void;
   onCancel: () => void;
 }) {
   const [pending, startTransition] = useTransition();
@@ -35,8 +43,12 @@ export default function CheckInForm({
   const [mode, setMode] = useState<"existing" | "new">(prefillBooking?.tenantId ? "existing" : "new");
   const [search, setSearch] = useState("");
   const [existingTenantId, setExistingTenantId] = useState<number | null>(prefillBooking?.tenantId ?? null);
+  const [selectedRoomId, setSelectedRoomId] = useState<number | "">(room?.id ?? "");
+  const activeRoom: CheckInRoomLike | null = room ?? roomOptions?.find((r) => r.id === selectedRoomId) ?? null;
   const [tenantType, setTenantType] = useState(
-    prefillBooking?.bookingType ?? (room.rentalTypeSupport === "both" ? "monthly" : room.rentalTypeSupport)
+    prefillBooking?.bookingType ??
+      defaultTenantType ??
+      (activeRoom ? (activeRoom.rentalTypeSupport === "both" ? "monthly" : activeRoom.rentalTypeSupport) : "monthly")
   );
   const [isReservation, setIsReservation] = useState(forceReservation);
   const [nights, setNights] = useState<number | "">("");
@@ -44,12 +56,22 @@ export default function CheckInForm({
     prefillBooking ? new Date(prefillBooking.checkinDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10)
   );
   const [checkoutDate, setCheckoutDate] = useState("");
+  const [months, setMonths] = useState<number | "">("");
+  const [plannedCheckoutDate, setPlannedCheckoutDate] = useState("");
   const [vehicles, setVehicles] = useState<{ plateNo: string; brandModel: string; color: string }[]>([]);
 
   const filteredTenants = useMemo(
     () => tenants.filter((t) => t.name.toLowerCase().includes(search.toLowerCase())),
     [tenants, search]
   );
+
+  // เมื่อเลือกห้องที่รองรับแค่ประเภทเดียว ให้ปรับ tenantType ให้ตรงอัตโนมัติ
+  useEffect(() => {
+    if (activeRoom && activeRoom.rentalTypeSupport !== "both" && tenantType !== activeRoom.rentalTypeSupport) {
+      setTenantType(activeRoom.rentalTypeSupport);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRoom?.id]);
 
   function onNightsChange(n: string) {
     setNights(n === "" ? "" : Number(n));
@@ -60,8 +82,23 @@ export default function CheckInForm({
     }
   }
 
+  function onMonthsChange(n: string) {
+    setMonths(n === "" ? "" : Number(n));
+    if (n !== "" && checkinDate) {
+      const d = new Date(checkinDate);
+      d.setMonth(d.getMonth() + Number(n));
+      setPlannedCheckoutDate(d.toISOString().slice(0, 10));
+    } else {
+      setPlannedCheckoutDate("");
+    }
+  }
+
   async function handleSubmit(formData: FormData) {
     setError(null);
+    if (roomOptions && !activeRoom) {
+      setError("กรุณาเลือกห้อง");
+      return;
+    }
     formData.set("mode", mode);
     if (mode === "existing") {
       if (!existingTenantId) {
@@ -81,14 +118,28 @@ export default function CheckInForm({
     startTransition(async () => {
       const result = await checkInTenant(formData);
       if (result?.error) setError(result.error);
-      else onDone(isReservation ? "บันทึกการจองแล้ว" : "เพิ่มผู้เช่าเรียบร้อยแล้ว");
+      else onDone(isReservation ? "บันทึกการจองแล้ว" : "เพิ่มผู้เช่าเรียบร้อยแล้ว", result?.occupancyId);
     });
   }
 
   return (
     <form action={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <input type="hidden" name="roomId" value={room.id} />
+      <input type="hidden" name="roomId" value={activeRoom?.id ?? ""} />
       {error && <div className="form-error">{error}</div>}
+
+      {roomOptions && (
+        <div className="field">
+          <label>เลือกห้อง *</label>
+          <select value={selectedRoomId} onChange={(e) => setSelectedRoomId(Number(e.target.value))}>
+            <option value="">-- เลือกห้อง --</option>
+            {roomOptions.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.roomNumber} (ชั้น {r.floor} · {ROOM_STATUS_LABEL[r.status]})
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {!prefillBooking && (
         <div className="tabs" style={{ marginBottom: 0 }}>
@@ -216,15 +267,17 @@ export default function CheckInForm({
       <hr style={{ border: "none", borderTop: "1px solid var(--border)" }} />
       <strong>ข้อมูลการเข้าพัก</strong>
 
-      {room.rentalTypeSupport === "both" && (
+      {(!activeRoom || activeRoom.rentalTypeSupport === "both") && (
         <div className="field">
           <label>ประเภทการเข้าพัก</label>
           <div style={{ display: "flex", gap: 16 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <input type="radio" checked={tenantType === "monthly"} onChange={() => setTenantType("monthly")} /> รายเดือน (฿{room.monthlyPrice})
+              <input type="radio" checked={tenantType === "monthly"} onChange={() => setTenantType("monthly")} /> รายเดือน
+              {activeRoom?.monthlyPrice != null && ` (฿${formatNumber(activeRoom.monthlyPrice)})`}
             </label>
             <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <input type="radio" checked={tenantType === "daily"} onChange={() => setTenantType("daily")} /> รายวัน (฿{room.dailyPrice})
+              <input type="radio" checked={tenantType === "daily"} onChange={() => setTenantType("daily")} /> รายวัน
+              {activeRoom?.dailyPrice != null && ` (฿${formatNumber(activeRoom.dailyPrice)})`}
             </label>
           </div>
         </div>
@@ -247,21 +300,40 @@ export default function CheckInForm({
               <input name="checkoutDate" type="date" value={checkoutDate} onChange={(e) => setCheckoutDate(e.target.value)} />
             </div>
           </>
-        ) : (
+        ) : isReservation ? (
           <div className="field">
-            <label>วันสิ้นสุด (เว้นว่าง = ไม่กำหนด)</label>
-            <input name="plannedCheckoutDate" type="date" />
+            <label>กำหนดเซ็นสัญญาภายในวันที่ (ถ้ามี)</label>
+            <input name="contractDeadlineDate" type="date" />
+          </div>
+        ) : (
+          <>
+            <div className="field">
+              <label>จำนวนเดือน (เว้นว่าง = ไม่กำหนด)</label>
+              <input type="number" min={1} value={months} onChange={(e) => onMonthsChange(e.target.value)} />
+            </div>
+            <div className="field">
+              <label>วันสิ้นสุด</label>
+              <input
+                name="plannedCheckoutDate"
+                type="date"
+                value={plannedCheckoutDate}
+                onChange={(e) => setPlannedCheckoutDate(e.target.value)}
+              />
+            </div>
+          </>
+        )}
+        {!isReservation && (
+          <div className="field">
+            <label>เงินมัดจำ (บาท)</label>
+            <input
+              key={`deposit-${activeRoom?.id ?? "none"}-${tenantType}`}
+              name="depositAmount"
+              type="number"
+              step="0.01"
+              defaultValue={(tenantType === "monthly" ? activeRoom?.monthlyDeposit : activeRoom?.dailyDeposit) ?? ""}
+            />
           </div>
         )}
-        <div className="field">
-          <label>เงินมัดจำ (บาท)</label>
-          <input
-            name="depositAmount"
-            type="number"
-            step="0.01"
-            defaultValue={tenantType === "monthly" ? room.monthlyDeposit ?? "" : room.dailyDeposit ?? ""}
-          />
-        </div>
       </div>
 
       {!isReservation && (

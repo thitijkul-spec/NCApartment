@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { createRoom, updateRoom, deleteRoomImage } from "./actions";
+import { createRoom, updateRoom } from "./actions";
 import { AMENITY_PRESETS, parseUtility, DEFAULT_METERED_UTILITY, DEFAULT_FLAT_UTILITY } from "@/lib/room-utils";
 import type { UtilityMeteredConfig, UtilityFlatConfig, ExtraFee } from "@/lib/room-utils";
+import { formatNumber } from "@/lib/format";
 import type { RoomWithRelations, BuildingSettings } from "./types";
 import { XIcon, TrashIcon, PlusIcon } from "../icons";
 
@@ -78,10 +79,6 @@ export default function RoomFormModal({
               <div className="field">
                 <label>ชั้น *</label>
                 <input name="floor" type="number" defaultValue={room?.floor ?? 1} required />
-              </div>
-              <div className="field">
-                <label>ขนาด (ตร.ม.)</label>
-                <input name="sizeSqm" type="number" step="0.01" defaultValue={room?.sizeSqm ?? ""} />
               </div>
               <div className="field">
                 <label>สถานะ *</label>
@@ -176,19 +173,33 @@ export default function RoomFormModal({
             <UtilityFlatRow label="ค่าส่วนกลาง" prefix="commonArea" defaults={commonArea} buildingAmount={settings?.defaultCommonAreaFee} />
 
             <h2 style={{ fontSize: 15, marginTop: 16 }}>ค่าใช้จ่ายอื่นๆ รายเดือน (เฉพาะห้องนี้)</h2>
+            {extraFees.length > 0 && (
+              <div className="form-row" style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600, marginBottom: -6 }}>
+                <span style={{ flex: 2 }}>รายการ</span>
+                <span style={{ width: 80 }}>จำนวน</span>
+                <span style={{ flex: 1 }}>ราคา/หน่วย</span>
+                <span style={{ width: 24 }} />
+              </div>
+            )}
             {extraFees.map((f, i) => (
               <div key={i} className="form-row" style={{ alignItems: "center" }}>
                 <input
                   name="extraFeeName"
                   defaultValue={f.name}
-                  placeholder="ชื่อรายการ"
+                  placeholder="เช่น ค่าที่จอดรถ"
                   style={{ flex: 2, padding: 8, border: "1px solid var(--border)", borderRadius: 8 }}
+                />
+                <input
+                  name="extraFeeQty"
+                  type="number"
+                  min={1}
+                  defaultValue={f.qty ?? 1}
+                  style={{ width: 80, padding: 8, border: "1px solid var(--border)", borderRadius: 8 }}
                 />
                 <input
                   name="extraFeeAmount"
                   type="number"
                   defaultValue={f.amount}
-                  placeholder="จำนวนเงิน"
                   style={{ flex: 1, padding: 8, border: "1px solid var(--border)", borderRadius: 8 }}
                 />
                 <button type="button" className="plain-icon-btn" onClick={() => setExtraFees((p) => p.filter((_, idx) => idx !== i))}>
@@ -196,7 +207,7 @@ export default function RoomFormModal({
                 </button>
               </div>
             ))}
-            <button type="button" className="secondary" onClick={() => setExtraFees((p) => [...p, { name: "", amount: 0 }])}>
+            <button type="button" className="secondary" onClick={() => setExtraFees((p) => [...p, { name: "", amount: 0, qty: 1 }])}>
               <PlusIcon size={14} /> เพิ่มรายการ
             </button>
 
@@ -240,29 +251,6 @@ export default function RoomFormModal({
             )}
 
             <div className="field" style={{ marginTop: 16 }}>
-              <label>รูปห้อง (สูงสุด 10 รูป, ไม่เกิน 10MB/รูป)</label>
-              <input name="images" type="file" accept="image/*" multiple />
-            </div>
-            {room && room.images.length > 0 && (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 8 }}>
-                {room.images.map((img) => (
-                  <label key={img.id} style={{ position: "relative", cursor: "pointer" }}>
-                    <img src={img.url} alt="" style={{ width: 90, height: 90, objectFit: "cover", borderRadius: 8 }} />
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4, fontSize: 11 }}>
-                      <input
-                        type="radio"
-                        name="coverImageId"
-                        value={img.id}
-                        defaultChecked={room.coverImageId === img.id}
-                      />
-                      รูปปก
-                    </div>
-                  </label>
-                ))}
-              </div>
-            )}
-
-            <div className="field" style={{ marginTop: 16 }}>
               <label>รายละเอียดเพิ่มเติม</label>
               <textarea name="notes" defaultValue={room?.notes ?? ""} rows={3} />
             </div>
@@ -282,6 +270,14 @@ export default function RoomFormModal({
   );
 }
 
+type UtilityMode = "excluded" | "default" | "custom";
+
+function initialMode(excluded: boolean, useBuildingDefault: boolean): UtilityMode {
+  if (excluded) return "excluded";
+  if (useBuildingDefault) return "default";
+  return "custom";
+}
+
 function UtilityMeteredRow({
   label,
   prefix,
@@ -295,36 +291,41 @@ function UtilityMeteredRow({
   buildingRate?: number | null;
   buildingMode?: string | null;
 }) {
-  const [excluded, setExcluded] = useState(defaults.excluded);
-  const [useDefault, setUseDefault] = useState(defaults.useBuildingDefault);
-  const [mode, setMode] = useState(defaults.mode);
+  const [mode, setMode] = useState<UtilityMode>(initialMode(defaults.excluded, defaults.useBuildingDefault));
+  const [customMode, setCustomMode] = useState(defaults.mode);
+  const buildingLabel = `${buildingMode === "metered" ? "อิงมิเตอร์" : "เหมาจ่าย"} ${buildingRate != null ? `${formatNumber(buildingRate)} บาท` : "(อาคารยังไม่ตั้งค่า)"}`;
 
   return (
-    <div className="form-row" style={{ alignItems: "center", borderTop: "1px solid var(--border)", paddingTop: 10 }}>
-      <strong style={{ minWidth: 90 }}>{label}</strong>
-      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-        <input type="checkbox" name={`${prefix}_excluded`} checked={excluded} onChange={(e) => setExcluded(e.target.checked)} />
-        ไม่คิด
-      </label>
-      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, opacity: excluded ? 0.5 : 1 }}>
-        <input
-          type="checkbox"
-          name={`${prefix}_useDefault`}
-          checked={useDefault}
-          disabled={excluded}
-          onChange={(e) => setUseDefault(e.target.checked)}
-        />
-        ใช้ตามอาคาร {useDefault && !excluded && `(${buildingMode === "metered" ? "มิเตอร์" : "เหมาจ่าย"} ${buildingRate ?? "-"})`}
-      </label>
-      {!excluded && !useDefault && (
-        <>
-          <select name={`${prefix}_mode`} value={mode} onChange={(e) => setMode(e.target.value as any)}>
-            <option value="flat">เหมาจ่าย</option>
-            <option value="metered">อิงมิเตอร์ (บาท/หน่วย)</option>
-          </select>
-          <input name={`${prefix}_rate`} type="number" step="0.01" defaultValue={defaults.rate ?? ""} placeholder="อัตรา" style={{ width: 100 }} />
-        </>
-      )}
+    <div className="utility-row">
+      <div className="utility-row-head">
+        <span className="utility-row-title">{label}</span>
+        <span className="utility-row-building-rate">ค่าอาคาร: {buildingLabel}</span>
+      </div>
+      <input type="hidden" name={`${prefix}_excluded`} value={mode === "excluded" ? "on" : ""} />
+      <input type="hidden" name={`${prefix}_useDefault`} value={mode === "default" ? "on" : ""} />
+      <div className="utility-row-options">
+        <label>
+          <input type="radio" name={`${prefix}_mode_select`} checked={mode === "excluded"} onChange={() => setMode("excluded")} />
+          ไม่คิด
+        </label>
+        <label>
+          <input type="radio" name={`${prefix}_mode_select`} checked={mode === "default"} onChange={() => setMode("default")} />
+          ใช้ตามอาคาร
+        </label>
+        <label>
+          <input type="radio" name={`${prefix}_mode_select`} checked={mode === "custom"} onChange={() => setMode("custom")} />
+          กำหนดเอง
+        </label>
+        {mode === "custom" && (
+          <>
+            <select name={`${prefix}_mode`} value={customMode} onChange={(e) => setCustomMode(e.target.value as any)}>
+              <option value="flat">เหมาจ่าย</option>
+              <option value="metered">อิงมิเตอร์ (บาท/หน่วย)</option>
+            </select>
+            <input name={`${prefix}_rate`} type="number" step="0.01" defaultValue={defaults.rate ?? ""} placeholder="อัตรา" style={{ width: 100 }} />
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -340,29 +341,34 @@ function UtilityFlatRow({
   defaults: UtilityFlatConfig;
   buildingAmount?: number | null;
 }) {
-  const [excluded, setExcluded] = useState(defaults.excluded);
-  const [useDefault, setUseDefault] = useState(defaults.useBuildingDefault);
+  const [mode, setMode] = useState<UtilityMode>(initialMode(defaults.excluded, defaults.useBuildingDefault));
+  const buildingLabel = buildingAmount != null ? `${formatNumber(buildingAmount)} บาท/เดือน` : "(อาคารยังไม่ตั้งค่า)";
 
   return (
-    <div className="form-row" style={{ alignItems: "center", borderTop: "1px solid var(--border)", paddingTop: 10 }}>
-      <strong style={{ minWidth: 90 }}>{label}</strong>
-      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-        <input type="checkbox" name={`${prefix}_excluded`} checked={excluded} onChange={(e) => setExcluded(e.target.checked)} />
-        ไม่คิด
-      </label>
-      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, opacity: excluded ? 0.5 : 1 }}>
-        <input
-          type="checkbox"
-          name={`${prefix}_useDefault`}
-          checked={useDefault}
-          disabled={excluded}
-          onChange={(e) => setUseDefault(e.target.checked)}
-        />
-        ใช้ตามอาคาร {useDefault && !excluded && `(${buildingAmount ?? "-"} บาท)`}
-      </label>
-      {!excluded && !useDefault && (
-        <input name={`${prefix}_amount`} type="number" step="0.01" defaultValue={defaults.amount ?? ""} placeholder="บาท/เดือน" style={{ width: 100 }} />
-      )}
+    <div className="utility-row">
+      <div className="utility-row-head">
+        <span className="utility-row-title">{label}</span>
+        <span className="utility-row-building-rate">ค่าอาคาร: {buildingLabel}</span>
+      </div>
+      <input type="hidden" name={`${prefix}_excluded`} value={mode === "excluded" ? "on" : ""} />
+      <input type="hidden" name={`${prefix}_useDefault`} value={mode === "default" ? "on" : ""} />
+      <div className="utility-row-options">
+        <label>
+          <input type="radio" name={`${prefix}_mode_select`} checked={mode === "excluded"} onChange={() => setMode("excluded")} />
+          ไม่คิด
+        </label>
+        <label>
+          <input type="radio" name={`${prefix}_mode_select`} checked={mode === "default"} onChange={() => setMode("default")} />
+          ใช้ตามอาคาร
+        </label>
+        <label>
+          <input type="radio" name={`${prefix}_mode_select`} checked={mode === "custom"} onChange={() => setMode("custom")} />
+          กำหนดเอง
+        </label>
+        {mode === "custom" && (
+          <input name={`${prefix}_amount`} type="number" step="0.01" defaultValue={defaults.amount ?? ""} placeholder="บาท/เดือน" style={{ width: 100 }} />
+        )}
+      </div>
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import type { Bill, BillLineItem, Payment, Room, Tenant, Contract, Account } from "@prisma/client";
-import { addPayment, deletePayment, cancelBill, addLateFee } from "../actions";
+import { addPayment, deletePayment, cancelBill, addLateFee, updateBillIssueDate, updatePaymentDate } from "../actions";
 import { TrashIcon, WalletIcon } from "../../icons";
 
 type BillFull = Bill & {
@@ -27,14 +27,18 @@ const ITEM_LABEL: Record<string, string> = {
   late_fee: "ค่าปรับล่าช้า",
 };
 
+import { formatDateBE } from "@/lib/date-utils";
+
 function fmtDate(d: Date | string) {
-  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" });
+  return formatDateBE(d);
 }
 
 export default function BillDetailClient({ bill, accounts, buildingName }: { bill: BillFull; accounts: Account[]; buildingName: string }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [editingIssueDate, setEditingIssueDate] = useState(false);
+  const [issueDateInput, setIssueDateInput] = useState(new Date(bill.issueDate).toISOString().slice(0, 10));
 
   const total = bill.lineItems.reduce((s, li) => s + li.amount, 0) - (bill.discountAmount ?? 0);
   const paid = bill.payments.reduce((s, p) => s + p.amount, 0);
@@ -47,6 +51,17 @@ export default function BillDetailClient({ bill, accounts, buildingName }: { bil
     startTransition(async () => {
       const result = await cancelBill(formData);
       if (result?.error) alert(result.error);
+    });
+  }
+
+  function handleSaveIssueDate() {
+    const formData = new FormData();
+    formData.set("billId", String(bill.id));
+    formData.set("issueDate", issueDateInput);
+    startTransition(async () => {
+      const result = await updateBillIssueDate(formData);
+      if (result?.error) alert(result.error);
+      else setEditingIssueDate(false);
     });
   }
 
@@ -90,7 +105,36 @@ export default function BillDetailClient({ bill, accounts, buildingName }: { bil
         <p style={{ fontSize: 14 }}>
           ห้อง {bill.room.roomNumber} · ผู้เช่า {bill.tenant.name} · งวด {bill.billingMonth}
           <br />
-          วันออกบิล {fmtDate(bill.issueDate)} · ครบกำหนด {fmtDate(bill.dueDate)}
+          วันออกบิล{" "}
+          {editingIssueDate ? (
+            <span className="no-print" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="date"
+                value={issueDateInput}
+                onChange={(e) => setIssueDateInput(e.target.value)}
+                style={{ padding: "2px 6px", fontSize: 13 }}
+              />
+              <button type="button" className="secondary" style={{ fontSize: 12, padding: "2px 8px" }} onClick={handleSaveIssueDate} disabled={pending}>
+                บันทึก
+              </button>
+              <button type="button" className="plain-icon-btn" style={{ fontSize: 12 }} onClick={() => setEditingIssueDate(false)}>
+                ยกเลิก
+              </button>
+            </span>
+          ) : (
+            <>
+              {fmtDate(bill.issueDate)}{" "}
+              <button
+                type="button"
+                className="plain-icon-btn no-print"
+                style={{ fontSize: 12, textDecoration: "underline", width: "auto" }}
+                onClick={() => setEditingIssueDate(true)}
+              >
+                แก้ไข
+              </button>
+            </>
+          )}
+          {" "}· ครบกำหนด {fmtDate(bill.dueDate)}
         </p>
 
         <table>
@@ -138,29 +182,76 @@ export default function BillDetailClient({ bill, accounts, buildingName }: { bil
           <WalletIcon size={16} /> การชำระเงิน
         </h2>
         {bill.payments.map((p) => (
-          <div key={p.id} style={{ borderBottom: "1px solid var(--border)", padding: "10px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <strong>฿{p.amount.toLocaleString()}</strong> · {p.method === "cash" ? "เงินสด" : "โอนเงิน"}
-              {p.account && ` (${p.account.name})`}
-              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                ใบเสร็จ {p.receiptNo} {p.taxInvoiceNo && `· ใบกำกับภาษี ${p.taxInvoiceNo}`} · {fmtDate(p.paidAt)}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <a href={`/bills/receipts/${p.id}`} className="secondary btn">
-                ใบเสร็จ
-              </a>
-              <button className="plain-icon-btn" onClick={() => handleDeletePayment(p.id)} disabled={pending}>
-                <TrashIcon size={16} />
-              </button>
-            </div>
-          </div>
+          <PaymentRow key={p.id} payment={p} pending={pending} onDelete={handleDeletePayment} />
         ))}
         {bill.payments.length === 0 && <p className="empty">ยังไม่มีการชำระ</p>}
 
         {bill.status !== "cancelled" && balance > 0 && (
           <PaymentForm key={bill.payments.length} billId={bill.id} accounts={accounts} suggestedAmount={balance} />
         )}
+      </div>
+    </div>
+  );
+}
+
+function PaymentRow({
+  payment,
+  pending,
+  onDelete,
+}: {
+  payment: Payment & { account: Account | null };
+  pending: boolean;
+  onDelete: (id: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [dateInput, setDateInput] = useState(new Date(payment.paidAt).toISOString().slice(0, 10));
+  const [saving, startSaving] = useTransition();
+
+  function save() {
+    const formData = new FormData();
+    formData.set("paymentId", String(payment.id));
+    formData.set("paidAt", dateInput);
+    startSaving(async () => {
+      const result = await updatePaymentDate(formData);
+      if (result?.error) alert(result.error);
+      else setEditing(false);
+    });
+  }
+
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)", padding: "10px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div>
+        <strong>฿{payment.amount.toLocaleString()}</strong> · {payment.method === "cash" ? "เงินสด" : "โอนเงิน"}
+        {payment.account && ` (${payment.account.name})`}
+        <div style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", gap: 6, alignItems: "center" }}>
+          ใบเสร็จ {payment.receiptNo} {payment.taxInvoiceNo && `· ใบกำกับภาษี ${payment.taxInvoiceNo}`} ·{" "}
+          {editing ? (
+            <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+              <input type="date" value={dateInput} onChange={(e) => setDateInput(e.target.value)} style={{ padding: "1px 4px", fontSize: 12 }} />
+              <button type="button" className="secondary" style={{ fontSize: 11, padding: "1px 6px" }} onClick={save} disabled={saving}>
+                บันทึก
+              </button>
+              <button type="button" className="plain-icon-btn" style={{ fontSize: 11 }} onClick={() => setEditing(false)}>
+                ยกเลิก
+              </button>
+            </span>
+          ) : (
+            <>
+              {fmtDate(payment.paidAt)}
+              <button type="button" className="plain-icon-btn" style={{ fontSize: 11, textDecoration: "underline", width: "auto" }} onClick={() => setEditing(true)}>
+                แก้ไขวันที่
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <a href={`/bills/receipts/${payment.id}`} className="secondary btn">
+          ใบเสร็จ
+        </a>
+        <button className="plain-icon-btn" onClick={() => onDelete(payment.id)} disabled={pending}>
+          <TrashIcon size={16} />
+        </button>
       </div>
     </div>
   );
@@ -212,6 +303,10 @@ function PaymentForm({ billId, accounts, suggestedAmount }: { billId: number; ac
         <div className="field">
           <label>จำนวนเงิน</label>
           <input name="amount" type="number" step="0.01" defaultValue={suggestedAmount} required />
+        </div>
+        <div className="field">
+          <label>วันที่ชำระ</label>
+          <input name="paidAt" type="date" defaultValue={new Date().toISOString().slice(0, 10)} />
         </div>
         <div className="field">
           <label>วิธีชำระ</label>

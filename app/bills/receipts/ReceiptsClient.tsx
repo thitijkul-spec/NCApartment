@@ -6,8 +6,10 @@ import { WalletIcon } from "../../icons";
 
 type PaymentRow = Payment & { bill: Bill & { room: Room; tenant: Tenant } };
 
+import { formatDateBE } from "@/lib/date-utils";
+
 function fmtDate(d: Date | string) {
-  return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" });
+  return formatDateBE(d);
 }
 
 export default function ReceiptsClient({ payments, buildingName }: { payments: PaymentRow[]; buildingName: string }) {
